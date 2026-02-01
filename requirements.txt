@@ -1,0 +1,20 @@
+# Requirements for Open WebUI Prune Scripts
+#
+# These are the additional dependencies needed for the prune scripts
+# beyond what Open WebUI already requires.
+#
+# You need to install the requirements of Open WebUI as well, otherwise things like Vector DB connections will not work.
+#
+# Install with: pip install -r prune/requirements.txt
+# If you use a separate venv to your Open WebUI installation, you also need to install all Open WebUI requirements.
+
+# For interactive CLI with beautiful terminal UI
+rich>=13.0.0
+
+# For testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+
+# For type checking (optional)
+mypy>=1.0.0
