@@ -54,7 +54,7 @@ It runs independently of the web server and can be scheduled for automated maint
 ### Prerequisites
 
 - Open WebUI installation
-- Python 3.8+
+- Python 3.11+
 - Access to Open WebUI's Python environment and database
 - All Open WebUI dependencies installed (including vector database libraries like chromadb)
 
