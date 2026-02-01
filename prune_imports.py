@@ -116,6 +116,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.folders import Folder, Folders, FolderModel
     from open_webui.internal.db import get_db, get_db_context
     from open_webui.config import CACHE_DIR
+    from open_webui.storage.provider import Storage
 
     try:
         from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
@@ -138,6 +139,7 @@ elif _import_strategy == "git":
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
     from backend.open_webui.internal.db import get_db, get_db_context
     from backend.open_webui.config import CACHE_DIR
+    from backend.open_webui.storage.provider import Storage
 
     try:
         from backend.open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
@@ -164,6 +166,7 @@ __all__ = [
     'Folder',
     'Folders',
     'FolderModel',
+    'Storage',
     'get_db',
     'get_db_context',
     'CACHE_DIR',
