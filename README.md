@@ -1,6 +1,6 @@
 # Open WebUI Prune Tool
 
-A standalone command-line tool for cleaning up your Open WebUI database, reclaiming disk space, and maintaining optimal performance.
+A standalone command-line tool for cleaning up your Open WebUI instance, reclaiming disk space, and maintaining optimal performance.
 
 ## Table of Contents
 
@@ -33,7 +33,7 @@ It runs independently of the web server and can be scheduled for automated maint
 - **Non-Interactive Mode**: Command-line interface for automation
 
 ✅ **Complete Configurability**
-- All 17 configuration options from the web UI prune dialog
+- All 17 configuration options are fully configurable
 - Preview mode to see what will be deleted before execution
 - Fine-grained control over what gets deleted
 
