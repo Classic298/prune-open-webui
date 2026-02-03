@@ -166,7 +166,7 @@ docker run -d \
 
 ### Method 3: Systemd Service Installation
 
-If Open WebUI runs as a systemd service (common for production installations), environment variables like `DATABASE_URL` are **only available to the service**, not to your terminal session.
+If Open WebUI runs as a systemd service, environment variables like `DATABASE_URL` are **only available to the service**, not to your terminal session.
 
 **⚠️ IMPORTANT:** The prune script needs the same environment variables as Open WebUI. If you get "unable to open database file" or "Failed to connect to database" errors, your environment variables are not set in your shell.
 
@@ -255,8 +255,10 @@ Example: `password@123` becomes `password%40123`
 # Activate environment where open-webui is installed
 source venv/bin/activate
 
-# Ensure all dependencies are installed
+# Ensure all dependencies of Open WebUI are installed
 pip install -r backend/requirements.txt
+# Also install all dependencies of the prune script
+pip install -r prune/requirements.txt
 
 # Find installation location
 pip show open-webui | grep Location
@@ -309,7 +311,7 @@ chmod +x run_prune.sh
 
 ## Quick Start
 
-### Interactive Mode (Recommended for First-Time Users)
+### Interactive Mode
 
 ```bash
 python prune/prune.py
@@ -343,7 +345,7 @@ python prune/prune.py \
 
 ### Basic Patterns
 
-**Preview Mode (Safe):**
+**Preview Mode / --dry-run (Safe):**
 ```bash
 python prune/prune.py --days 60 --dry-run
 ```
@@ -406,7 +408,7 @@ To **disable** a default-true flag, use `--no-` prefix:
 # Delete archived chats too
 python prune/prune.py --days 60 --no-exempt-archived-chats --execute
 
-# Include admins in deletion (NOT RECOMMENDED!)
+# Include admins in inactive user deletion (NOT RECOMMENDED!)
 python prune/prune.py --delete-inactive-users-days 180 --no-exempt-admin-users --execute
 ```
 
@@ -429,7 +431,7 @@ crontab -e
 
 1. **Always test manually first** with `--dry-run`
 2. **Schedule during low-usage hours** (2-4 AM)
-3. **Create backups before pruning** (automated backup script)
+3. **Create backups before pruning**
 4. **Monitor logs regularly** for errors
 5. **Start conservative**, adjust gradually
 6. **Never use VACUUM** during active hours
@@ -599,31 +601,12 @@ If operations are very slow:
 - Consider breaking into smaller operations
 - Monitor with `htop` during execution
 
-## How It Works
-
-The script accesses Open WebUI's backend directly:
-- Imports from `backend.open_webui` modules
-- Uses same database connection (`DATABASE_URL`)
-- Uses same vector database configuration
-- Reuses all prune logic from the API router
-
-**This means:**
-- ✅ No code duplication
-- ✅ Same behavior as web UI
-- ✅ Automatically gets updates
-- ✅ Battle-tested code
-
-**But requires:**
-- Same Python environment as Open WebUI
-- Access to database
-- Ability to import backend modules
-
 ## Technical Details
 
 ### What Gets Deleted
 
 **By Age:**
-- Chats older than specified days (based on `updated_at`)
+- Chats older than specified days (based on `updated_at`, not based on `created_at` to ensure only long-unused chats get deleted)
 - Users inactive for specified days (based on `last_active_at`)
 - Audio cache files (based on file `mtime`)
 
@@ -668,4 +651,4 @@ For issues or questions:
 
 ---
 
-**Remember:** With great power comes great responsibility. Always preview first, create backups, and start with conservative settings!
+**Remember:** With great power comes great responsibility. Always preview first, create backups, and start with conservative settings! **The prune script is not responsible for your lack of backups!**
