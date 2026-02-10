@@ -1,0 +1,213 @@
+name: Bug Report
+description: Report a reproducible bug. Feature requests and questions belong in Discussions.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Before submitting
+
+        - This tracker is for **reproducible bugs only**
+        - Feature requests, questions, and setup help → use [Discussions](https://github.com/Classic298/prune-open-webui/discussions)
+        - **Incomplete reports or non-reproducible bugs will be closed without comment**
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirm this is a valid bug report
+      options:
+        - label: This is a **reproducible bug**, not a feature request, question, or setup issue
+          required: true
+        - label: I have checked existing issues and this is not a duplicate
+          required: true
+        - label: I understand that incomplete reports will be closed without comment
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear, specific description of the bug. Not "it doesn't work."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Exact Steps to Reproduce
+      description: |
+        These must be EXACT. Copy-paste the commands you ran.
+        Someone must be able to reproduce this from a clean setup by following only these steps.
+        If not reproducible from these steps, the issue will be closed without comment.
+      placeholder: |
+        1. 
+        2. 
+        3. 
+
+        Exact command run:
+        ```
+        (paste command here)
+        ```
+
+        Options selected (if interactive mode):
+        e.g., "Enabled orphaned data cleanup, disabled user deletion, set chat age to 30 days"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened? Be specific.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened? Be specific. Do NOT say "it crashed" — describe the crash.
+    validations:
+      required: true
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Full Error Output
+      description: |
+        Paste the COMPLETE, UNTRUNCATED error output or traceback.
+        Do NOT paraphrase, summarize, or screenshot errors — paste the raw text.
+        Redact sensitive data (passwords, API keys, hostnames, usernames).
+      render: shell
+      placeholder: (paste FULL error output here — do not truncate)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS + Version
+      placeholder: e.g., Ubuntu 22.04, Windows 11 23H2
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Exact output of python --version
+      placeholder: e.g., 3.11.5
+    validations:
+      required: true
+
+  - type: input
+    id: owui-version
+    attributes:
+      label: Open WebUI Version
+      placeholder: e.g., 0.7.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database Engine
+      options:
+        - SQLite
+        - PostgreSQL
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vector-db
+    attributes:
+      label: Vector Database
+      options:
+        - ChromaDB
+        - PGVector
+        - None / Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation Method
+      options:
+        - pip
+        - Docker
+        - git clone
+    validations:
+      required: true
+
+  - type: input
+    id: prune-version
+    attributes:
+      label: Prune Script Version / Commit
+      placeholder: e.g., v1.0.0 or git commit hash
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment-type
+    attributes:
+      label: Deployment Type
+      options:
+        - Single Docker container
+        - Docker Compose
+        - Kubernetes
+        - Bare metal
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: user-count
+    attributes:
+      label: Approximate Number of Users
+      placeholder: e.g., 50
+    validations:
+      required: true
+
+  - type: input
+    id: chat-count
+    attributes:
+      label: Approximate Number of Chats
+      placeholder: e.g., 10000
+    validations:
+      required: true
+
+  - type: input
+    id: file-count
+    attributes:
+      label: Approximate Number of Files
+      placeholder: e.g., 500
+    validations:
+      required: true
+
+  - type: input
+    id: db-size
+    attributes:
+      label: Database Size
+      description: File size for SQLite, or DB size for PostgreSQL
+      placeholder: e.g., 2.3 GB
+    validations:
+      required: true
+
+  - type: input
+    id: vector-db-size
+    attributes:
+      label: Vector DB Size
+      description: Put N/A if not using a vector database
+      placeholder: e.g., 500 MB or N/A
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Screenshots, related issues, anything else relevant.
+    validations:
+      required: false
