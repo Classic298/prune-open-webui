@@ -1,5 +1,11 @@
 # Open WebUI Prune Tool
 
+> [!IMPORTANT]
+> **This is a community-built tool.** It is not an official part of the Open WebUI project. It is developed and maintained independently by community contributors on a best-effort basis. While we strive for correctness and safety, there are no guarantees of functionality, compatibility, or continued maintenance.
+
+> [!CAUTION]
+> **This tool performs irreversible, destructive operations on your database and file system.** Deleted data cannot be recovered. There is no undo. Always create a full backup or snapshot of your server, database, and data directory before running any pruning operations. Test on a staging environment before running against production. The authors and contributors of this tool accept **no liability** for data loss, corruption, or any other damage caused by its use, whether due to bugs, misconfiguration, or user error. **You use this tool entirely at your own risk.**
+
 A standalone command-line tool for cleaning up your Open WebUI instance, reclaiming disk space, and maintaining optimal performance.
 
 ## Table of Contents
@@ -33,18 +39,22 @@ It runs independently of the web server and can be scheduled for automated maint
 - **Non-Interactive Mode**: Command-line interface for automation
 
 ✅ **Complete Configurability**
-- All 17 configuration options are fully configurable
+- All configuration options are fully configurable
 - Preview mode to see what will be deleted before execution
 - Fine-grained control over what gets deleted
 
 ✅ **Database Support**
 - SQLite (default)
 - PostgreSQL
-- Vector databases: ChromaDB, PGVector, Milvus, Qdrant
+- Vector databases (community contributions for additional backends welcome!):
+  - ChromaDB — full cleanup support
+  - PGVector — full cleanup support
+  - Milvus — full cleanup support
+  - Qdrant — full cleanup support
 
 ✅ **Safety Features**
 - File-based locking prevents concurrent operations
-- Dry-run mode by default
+- Explicit `--execute` flag required — nothing is deleted without it
 - Multiple confirmation prompts (interactive mode)
 - Admin user protection
 - Detailed logging of all operations
@@ -58,15 +68,36 @@ It runs independently of the web server and can be scheduled for automated maint
 - Access to Open WebUI's Python environment and database
 - All Open WebUI dependencies installed (including vector database libraries like chromadb)
 
+### Folder Structure
+
+The prune tool is designed to live as a `prune/` subfolder inside your Open WebUI installation directory. All commands in this README assume that structure:
+
+```
+open-webui/              # Your Open WebUI root
+├── backend/
+├── prune/               # This repository, cloned here
+│   ├── prune.py         # Main entry point
+│   ├── prune_cli_interactive.py
+│   ├── prune_core.py
+│   ├── prune_operations.py
+│   ├── prune_imports.py
+│   ├── prune_models.py
+│   └── requirements.txt
+└── ...
+```
+
 ### Method 1: Git Installation (Manual Install)
 
 **One-time setup:**
 ```bash
 cd ~/path/to/open-webui        # Navigate to your Open WebUI directory
+git clone https://github.com/Classic298/prune-open-webui.git prune
 source venv/bin/activate        # Activate your Python virtual environment
-pip install -r backend/requirements.txt  # Install backend dependencies
+pip install -r prune/requirements.txt  # Install prune dependencies
 pip install rich                # For interactive mode (optional)
 ```
+
+**⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
 
 **Ready to use:**
 ```bash
@@ -79,15 +110,12 @@ python prune/prune.py          # Launch interactive mode
 
 Running inside the Docker container is the **recommended approach** because all dependencies (including vector database libraries like chromadb) are already installed.
 
-**Step 1: Download the prune folder** (one-time setup)
+**Step 1: Download the prune tool** (one-time setup)
 ```bash
-# Clone only the prune folder using sparse checkout
-git clone --filter=blob:none --no-checkout https://github.com/Classic298/open-webui.git
-cd open-webui
-git sparse-checkout init --cone
-git sparse-checkout set prune
-git checkout claude/analyze-prune-router-01C8wACN95WDtT67c8ULXdkr
+git clone https://github.com/Classic298/prune-open-webui.git prune
 ```
+
+**⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
 
 **Step 2: Copy files into your Docker container** (one-time setup)
 ```bash
@@ -266,47 +294,11 @@ pip show open-webui | grep Location
 # Run from that location
 cd <location>
 
-# Set required environment variables
+# Set required environment variables (see Method 3 for .env file alternative)
 export DATABASE_URL="postgresql://user:password@localhost:5432/openwebui"
-export VECTOR_DB="pgvector"  # or chroma, milvus, qdrant
+export VECTOR_DB="pgvector"  # or chroma
 
-python -m open_webui.prune  # Or appropriate path
-```
-
-**For repeated use, create a .env file:**
-```bash
-# Create .env in your Open WebUI directory
-cat > .env <<'EOF'
-DATABASE_URL=postgresql://user:password@localhost:5432/openwebui
-VECTOR_DB=pgvector
-DATA_DIR=/path/to/data
-EOF
-
-# The script will automatically load it
-python -m open_webui.prune --days 60 --dry-run
-```
-
-### Method 5: Wrapper Script
-
-Create a file `run_prune.sh`:
-
-```bash
-#!/bin/bash
-cd /path/to/open-webui
-source .venv/bin/activate
-
-# Load environment variables
-if [ -f .env ]; then
-    export $(cat .env | grep -v '^#' | xargs)
-fi
-
-# Run prune script
-python prune/prune.py "$@"
-```
-
-Make executable:
-```bash
-chmod +x run_prune.sh
+python prune/prune.py
 ```
 
 ## Quick Start
@@ -438,21 +430,6 @@ crontab -e
 
 ## Important Warnings
 
-### ⚠️ CRITICAL: This is a Destructive Operation
-
-**Deleted data cannot be recovered. Always create backups before executing.**
-
-```bash
-# For SQLite
-cp data/webui.db data/webui.db.backup
-
-# For PostgreSQL
-pg_dump openwebui > backup.sql
-
-# Backup files
-tar -czf backup.tar.gz data/uploads data/vector_db
-```
-
 ### ⚠️ User Deletion Cascades
 
 When you delete a user, **ALL their data is deleted**:
@@ -501,7 +478,7 @@ python prune/prune.py
 
 ### Error: "Failed to connect to database" or "unable to open database file"
 
-This is the **most common issue** for systemd and pip installations!
+This is the **most common issue** for systemd and pip installations.
 
 **Problem:** The script tries to connect to SQLite but you're using PostgreSQL, **OR** environment variables from your systemd service file are not available in your terminal session.
 
@@ -513,54 +490,7 @@ Failed to connect to database
 
 **Root Cause:** Environment variables like `DATABASE_URL` are set in your systemd service file but are **NOT** exported to your shell session.
 
-**Solution 1: Quick Test - Export inline**
-```bash
-# Replace with YOUR actual database credentials
-DATABASE_URL="postgresql://user:password@localhost:5432/openwebui" \
-python prune/prune.py --days 60 --dry-run
-```
-
-**Solution 2: Create .env file (Recommended)**
-```bash
-# Create .env file in Open WebUI directory
-cat > /opt/openwebui/.env <<'EOF'
-DATABASE_URL=postgresql://openwebui:your_password@localhost:5432/openwebui
-VECTOR_DB=pgvector
-DATA_DIR=/var/lib/openwebui
-CACHE_DIR=/var/lib/openwebui/cache
-EOF
-
-# Run prune script (it will auto-load .env)
-cd /opt/openwebui
-python prune/prune.py --days 60 --dry-run
-```
-
-**Solution 3: Check your systemd service file**
-```bash
-# View your systemd service environment
-systemctl show openwebui.service -p Environment
-
-# You should see DATABASE_URL and other variables
-# Copy those to a .env file or export them manually
-```
-
-**For SQLite installations:**
-```bash
-# Check environment variable
-echo $DATABASE_URL
-
-# Verify file exists
-ls -la /path/to/webui.db
-
-# Load from .env if needed
-export $(cat .env | grep -v '^#' | xargs)
-```
-
-**Important Notes:**
-- If your password contains special characters (`@`, `:`, `/`, `?`, `#`), you must URL-encode them
-- Example: `password@123` → `password%40123`
-- The prune script needs the **exact same** environment variables as your Open WebUI service
-- See [Method 3: Systemd Service Installation](#method-3-systemd-service-installation) for complete setup guide
+**Solution:** See [Method 3: Systemd Service Installation](#method-3-systemd-service-installation) for detailed instructions on configuring environment variables for your setup.
 
 ### Error: "Operation already in progress"
 
@@ -606,7 +536,7 @@ If operations are very slow:
 ### What Gets Deleted
 
 **By Age:**
-- Chats older than specified days (based on `updated_at`, not based on `created_at` to ensure only long-unused chats get deleted)
+- Chats older than specified days (based on `updated_at`, ensuring only long-unused chats are deleted)
 - Users inactive for specified days (based on `last_active_at`)
 - Audio cache files (based on file `mtime`)
 
@@ -625,17 +555,17 @@ If operations are very slow:
 
 ### Vector Database Support
 
-Fully supports cleanup for:
-- **ChromaDB**: SQLite metadata + directories + FTS indices
-- **PGVector**: PostgreSQL tables + embeddings
-- **Milvus**: Standard and multitenancy modes
-- **Qdrant**: Standard and multitenancy modes
+- **ChromaDB**: Full cleanup — SQLite metadata, directories, and FTS indices
+- **PGVector**: Full cleanup — PostgreSQL tables and embeddings
+- **Milvus**: Full cleanup — standard and multitenancy modes
+- **Qdrant**: Full cleanup — standard and multitenancy modes
 - **Others**: Safe no-op (does nothing)
+- **Adding support for a new backend**: Subclass `VectorDatabaseCleaner` in `prune_core.py`, implement the abstract methods, and register it in the `get_vector_database_cleaner` factory. Community contributions are welcome!
 
 ### Safety Features
 
 - **File-based locking** prevents concurrent runs
-- **Dry-run by default** requires explicit `--execute`
+- **Explicit execution** requires `--execute` flag — nothing is deleted without it
 - **Admin protection** enabled by default
 - **Stale lock detection** automatic cleanup
 - **Error handling** per-item with graceful degradation
@@ -643,12 +573,13 @@ Fully supports cleanup for:
 
 ## Support
 
-For issues or questions:
-- Review this README
+- Review this README and the [Troubleshooting](#troubleshooting) section
 - Check logs: `tail -f /var/log/openwebui-prune.log`
-- Test in staging environment
-- Open an issue
+- Test in a staging environment first
+- **Questions, feature requests, and general discussion**: [Discussions](https://github.com/Classic298/prune-open-webui/discussions)
+- **Reproducible bugs only**: [Open an issue](https://github.com/Classic298/prune-open-webui/issues)
 
 ---
 
-**Remember:** With great power comes great responsibility. Always preview first, create backups, and start with conservative settings! **The prune script is not responsible for your lack of backups!**
+> [!CAUTION]
+> **With great power comes great responsibility.** Always preview first, create backups, and start with conservative settings. This tool is not responsible for your lack of backups.

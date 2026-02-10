@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 💡 Feature Request
-    url: https://github.com/Classic298/prune-open-webui/discussions/categories/ideas
+    url: https://github.com/Classic298/prune-open-webui/discussions
     about: Suggest new features or improvements in Discussions.
   - name: ❓ Question / Help
-    url: https://github.com/Classic298/prune-open-webui/discussions/categories/q-a
+    url: https://github.com/Classic298/prune-open-webui/discussions
     about: Ask questions or get help with setup in Discussions.

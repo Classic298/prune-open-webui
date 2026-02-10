@@ -1,6 +1,6 @@
 name: Bug Report
 description: Report a reproducible bug. Feature requests and questions belong in Discussions.
-title: "[Bug] "
+title: "issue: "
 labels: ["bug"]
 body:
   - type: markdown
