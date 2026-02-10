@@ -10,7 +10,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional, Set, Callable, Any
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func, and_, or_, not_
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -52,8 +52,9 @@ def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
-        Users, Chat, Chats, ChatFile, Message, Files, Notes, Prompts, Model, Models,
-        Knowledges, Functions, Tools, Folder, Folders, FolderModel,
+        Users, Chat, Chats, ChatFile, Message, File, Files, Note, Notes,
+        Prompt, Prompts, Model, Models, Knowledge, Knowledges,
+        Function, Functions, Tool, Tools, Folder, Folders, FolderModel,
         get_db, get_db_context, CACHE_DIR
     )
 except ImportError as e:
@@ -129,28 +130,35 @@ def count_inactive_users(
 def count_old_chats(
     days: Optional[int], exempt_archived: bool, exempt_in_folders: bool
 ) -> int:
-    """Count chats that would be deleted by age."""
+    """Count chats that would be deleted by age.
+
+    Uses a SQL COUNT query instead of loading full ORM objects,
+    avoiding the expensive deserialization of large JSONB chat columns.
+    """
     if days is None:
         return 0
 
     cutoff_time = int(time.time()) - (days * 86400)
-    count = 0
 
     try:
-        for chat in Chats.get_chats():
-            if chat.updated_at < cutoff_time:
-                if exempt_archived and chat.archived:
-                    continue
-                if exempt_in_folders and (
-                    getattr(chat, "folder_id", None) is not None
-                    or getattr(chat, "pinned", False)
-                ):
-                    continue
-                count += 1
+        with get_db_context() as db:
+            # Build filter conditions
+            conditions = [Chat.updated_at < cutoff_time]
+
+            if exempt_archived:
+                conditions.append(or_(Chat.archived == False, Chat.archived == None))
+
+            if exempt_in_folders:
+                conditions.append(and_(
+                    Chat.folder_id == None,
+                    or_(Chat.pinned == False, Chat.pinned == None)
+                ))
+
+            count = db.query(func.count(Chat.id)).filter(*conditions).scalar()
+            return count or 0
     except Exception as e:
         log.debug(f"Error counting old chats: {e}")
-
-    return count
+        return 0
 
 
 def count_orphaned_records(
@@ -158,7 +166,12 @@ def count_orphaned_records(
     active_file_ids: Set[str],
     active_user_ids: Set[str]
 ) -> dict:
-    """Count orphaned database records that would be deleted."""
+    """Count orphaned database records that would be deleted.
+
+    Uses SQL COUNT queries instead of loading full ORM objects,
+    avoiding the expensive deserialization of large JSONB columns
+    (chat history, tool specs, function content, etc.).
+    """
     counts = {
         "chats": 0,
         "files": 0,
@@ -172,55 +185,32 @@ def count_orphaned_records(
     }
 
     try:
-        # Count orphaned files
-        for file_record in Files.get_files():
-            should_delete = (
-                file_record.id not in active_file_ids
-                or file_record.user_id not in active_user_ids
-            )
-            if should_delete:
-                counts["files"] += 1
+        with get_db_context() as db:
+            # Count orphaned files (not in active_file_ids OR owner not in active_user_ids)
+            counts["files"] = db.query(func.count(File.id)).filter(
+                or_(
+                    not_(File.id.in_(active_file_ids)) if active_file_ids else True,
+                    not_(File.user_id.in_(active_user_ids)) if active_user_ids else True,
+                )
+            ).scalar() or 0
 
-        # Count other orphaned records
-        if form_data.delete_orphaned_chats:
-            for chat in Chats.get_chats():
-                if chat.user_id not in active_user_ids:
-                    counts["chats"] += 1
+            # Count other orphaned records by user ownership
+            _table_flag_map = [
+                ("chats",          Chat,      Chat.user_id,      form_data.delete_orphaned_chats),
+                ("tools",          Tool,      Tool.user_id,      form_data.delete_orphaned_tools),
+                ("functions",      Function,  Function.user_id,  form_data.delete_orphaned_functions),
+                ("prompts",        Prompt,    Prompt.user_id,    form_data.delete_orphaned_prompts),
+                ("knowledge_bases", Knowledge, Knowledge.user_id, form_data.delete_orphaned_knowledge_bases),
+                ("models",         Model,     Model.user_id,     form_data.delete_orphaned_models),
+                ("notes",          Note,      Note.user_id,      form_data.delete_orphaned_notes),
+                ("folders",        Folder,    Folder.user_id,    form_data.delete_orphaned_folders),
+            ]
 
-        if form_data.delete_orphaned_tools:
-            for tool in Tools.get_tools():
-                if tool.user_id not in active_user_ids:
-                    counts["tools"] += 1
-
-        if form_data.delete_orphaned_functions:
-            for function in Functions.get_functions():
-                if function.user_id not in active_user_ids:
-                    counts["functions"] += 1
-
-        if form_data.delete_orphaned_prompts:
-            for prompt in Prompts.get_prompts():
-                if prompt.user_id not in active_user_ids:
-                    counts["prompts"] += 1
-
-        if form_data.delete_orphaned_knowledge_bases:
-            for kb in Knowledges.get_knowledge_bases():
-                if kb.user_id not in active_user_ids:
-                    counts["knowledge_bases"] += 1
-
-        if form_data.delete_orphaned_models:
-            for model in Models.get_all_models():
-                if model.user_id not in active_user_ids:
-                    counts["models"] += 1
-
-        if form_data.delete_orphaned_notes:
-            for note in Notes.get_notes():
-                if note.user_id not in active_user_ids:
-                    counts["notes"] += 1
-
-        if form_data.delete_orphaned_folders:
-            for folder in get_all_folders():
-                if folder.user_id not in active_user_ids:
-                    counts["folders"] += 1
+            for key, table_cls, user_id_col, enabled in _table_flag_map:
+                if enabled and active_user_ids:
+                    counts[key] = db.query(func.count()).select_from(table_cls).filter(
+                        not_(user_id_col.in_(active_user_ids))
+                    ).scalar() or 0
 
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")

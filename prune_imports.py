@@ -106,13 +106,13 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.users import Users
     from open_webui.models.chats import Chat, Chats, ChatFile
     from open_webui.models.messages import Message
-    from open_webui.models.files import Files
-    from open_webui.models.notes import Notes
-    from open_webui.models.prompts import Prompts
+    from open_webui.models.files import File, Files
+    from open_webui.models.notes import Note, Notes
+    from open_webui.models.prompts import Prompt, Prompts
     from open_webui.models.models import Model, Models
-    from open_webui.models.knowledge import Knowledges
-    from open_webui.models.functions import Functions
-    from open_webui.models.tools import Tools
+    from open_webui.models.knowledge import Knowledge, Knowledges
+    from open_webui.models.functions import Function, Functions
+    from open_webui.models.tools import Tool, Tools
     from open_webui.models.folders import Folder, Folders, FolderModel
     from open_webui.internal.db import get_db, get_db_context
     from open_webui.config import CACHE_DIR
@@ -128,13 +128,13 @@ elif _import_strategy == "git":
     from backend.open_webui.models.users import Users
     from backend.open_webui.models.chats import Chat, Chats, ChatFile
     from backend.open_webui.models.messages import Message
-    from backend.open_webui.models.files import Files
-    from backend.open_webui.models.notes import Notes
-    from backend.open_webui.models.prompts import Prompts
+    from backend.open_webui.models.files import File, Files
+    from backend.open_webui.models.notes import Note, Notes
+    from backend.open_webui.models.prompts import Prompt, Prompts
     from backend.open_webui.models.models import Model, Models
-    from backend.open_webui.models.knowledge import Knowledges
-    from backend.open_webui.models.functions import Functions
-    from backend.open_webui.models.tools import Tools
+    from backend.open_webui.models.knowledge import Knowledge, Knowledges
+    from backend.open_webui.models.functions import Function, Functions
+    from backend.open_webui.models.tools import Tool, Tools
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
     from backend.open_webui.internal.db import get_db, get_db_context
     from backend.open_webui.config import CACHE_DIR
@@ -153,13 +153,19 @@ __all__ = [
     'Chats',
     'ChatFile',
     'Message',
+    'File',
     'Files',
+    'Note',
     'Notes',
+    'Prompt',
     'Prompts',
     'Model',
     'Models',
+    'Knowledge',
     'Knowledges',
+    'Function',
     'Functions',
+    'Tool',
     'Tools',
     'Folder',
     'Folders',

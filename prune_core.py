@@ -191,20 +191,20 @@ def collect_file_ids_from_dict(obj, out: Set[str], valid_ids: Set[str], _depth: 
 
     if isinstance(obj, dict):
         # Check individual file ID fields
+        # valid_ids only contains real UUIDs from the database, so set lookup
+        # alone is sufficient — no need for regex pre-validation
         for field_name in ['id', 'file_id', 'fileId']:
             fid = obj.get(field_name)
-            if isinstance(fid, str) and UUID_PATTERN.fullmatch(fid):
-                if fid in valid_ids:
-                    out.add(fid)
+            if isinstance(fid, str) and fid in valid_ids:
+                out.add(fid)
 
         # Check file ID array fields
         for field_name in ['file_ids', 'fileIds']:
             fid_array = obj.get(field_name)
             if isinstance(fid_array, list):
                 for fid in fid_array:
-                    if isinstance(fid, str) and UUID_PATTERN.fullmatch(fid):
-                        if fid in valid_ids:
-                            out.add(fid)
+                    if isinstance(fid, str) and fid in valid_ids:
+                        out.add(fid)
 
         # Recurse into all dict values
         for value in obj.values():
