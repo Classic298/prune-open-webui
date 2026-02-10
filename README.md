@@ -59,6 +59,10 @@ It runs independently of the web server and can be scheduled for automated maint
 - Admin user protection
 - Detailed logging of all operations
 
+### Compatibility
+
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the full version compatibility matrix.
+
 ## Installation
 
 ### Prerequisites
