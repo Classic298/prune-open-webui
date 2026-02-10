@@ -3,6 +3,10 @@
   PRs that skip required sections will be closed without review.
 -->
 
+## Target Branch: `dev`
+
+<!-- All PRs MUST target the dev branch. PRs targeting main will be closed. -->
+
 ## PR Title Format
 
 <!--
