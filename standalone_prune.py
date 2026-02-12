@@ -482,6 +482,7 @@ def run_prune(form_data: PruneDataForm):
             )
             deleted_users = delete_inactive_users(
                 form_data.delete_inactive_users_days,
+                vector_cleaner,
                 form_data.exempt_admin_users,
                 form_data.exempt_pending_users,
             )

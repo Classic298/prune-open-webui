@@ -598,6 +598,7 @@ class InteractivePruneUI:
                 task = progress.add_task("Deleting inactive users...", total=None)
                 deleted = delete_inactive_users(
                     self.form_data.delete_inactive_users_days,
+                    self.vector_cleaner,
                     self.form_data.exempt_admin_users,
                     self.form_data.exempt_pending_users,
                 )

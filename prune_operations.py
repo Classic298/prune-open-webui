@@ -55,7 +55,7 @@ try:
         Users, Chat, Chats, ChatFile, Message, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
-        Folder, Folders, FolderModel,
+        Folder, Folders, FolderModel, Storage,
         get_db, get_db_context, CACHE_DIR
     )
 except ImportError as e:
@@ -517,7 +517,13 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
 
 def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] = None) -> bool:
     """
-    Safely delete a file record and its associated vector collection.
+    Safely delete a file record and its associated vector collections and physical storage.
+
+    This function mirrors the cleanup logic from Open WebUI's delete_file_by_id endpoint:
+    1. Cleans KB vector embeddings (filter by file_id and hash)
+    2. Deletes the standalone file-{id} vector collection
+    3. Deletes the file record from DB (CASCADE handles chat_file, channel_file, knowledge_file)
+    4. Deletes the physical file from storage
 
     Args:
         file_id: The file ID to delete
@@ -533,16 +539,74 @@ def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] =
             if not file_record:
                 return True
 
-            # Use modular vector database cleaner
+            # Clean KB vector embeddings (mirrors delete_file_by_id endpoint logic)
+            # This removes embeddings from knowledge base collections that reference this file
+            try:
+                knowledges = Knowledges.get_knowledges_by_file_id(file_id, db=session)
+                for kb in knowledges:
+                    try:
+                        # Delete by file_id filter
+                        vector_cleaner.delete(collection_name=kb.id, filter={"file_id": file_id})
+                        # Also delete by hash if available (covers hash-based lookups)
+                        if file_record.hash:
+                            vector_cleaner.delete(collection_name=kb.id, filter={"hash": file_record.hash})
+                    except Exception as e:
+                        log.debug(f"KB embedding cleanup for {kb.id}: {e}")
+            except Exception as e:
+                log.debug(f"Error getting knowledges for file {file_id}: {e}")
+
+            # Delete standalone file vector collection
             collection_name = f"file-{file_id}"
             vector_cleaner.delete_collection(collection_name)
 
+            # Delete from DB - CASCADE handles chat_file, channel_file, knowledge_file
             Files.delete_file_by_id(file_id, db=session)
+
+            # Delete physical file from storage
+            if file_record.path:
+                try:
+                    Storage.delete_file(file_record.path)
+                except Exception as e:
+                    log.debug(f"Error deleting physical file {file_record.path}: {e}")
+
             return True
 
     except Exception as e:
         log.error(f"Error deleting file {file_id}: {e}")
         return False
+
+
+def delete_user_files(user_id: str, vector_cleaner, db: Optional[Session] = None) -> int:
+    """
+    Delete all files owned by a user.
+
+    This should be called before deleting an inactive user to ensure proper cleanup
+    of file-related data (vector embeddings, physical storage, etc.).
+
+    Args:
+        user_id: The user ID whose files should be deleted
+        vector_cleaner: Vector database cleaner instance
+        db: Optional database session to reuse
+
+    Returns:
+        Number of files successfully deleted
+    """
+    deleted_count = 0
+    try:
+        files = Files.get_files_by_user_id(user_id, db=db)
+        log.debug(f"Found {len(files)} files for user {user_id}")
+
+        for file in files:
+            if safe_delete_file_by_id(file.id, vector_cleaner, db=db):
+                deleted_count += 1
+
+        if deleted_count > 0:
+            log.info(f"Deleted {deleted_count} files for user {user_id}")
+
+    except Exception as e:
+        log.error(f"Error deleting files for user {user_id}: {e}")
+
+    return deleted_count
 
 
 def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
@@ -597,10 +661,22 @@ def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
 
 
 def delete_inactive_users(
-    inactive_days: int, exempt_admin: bool = True, exempt_pending: bool = True
+    inactive_days: int,
+    vector_cleaner=None,
+    exempt_admin: bool = True,
+    exempt_pending: bool = True
 ) -> int:
     """
     Delete users who have been inactive for the specified number of days.
+
+    If vector_cleaner is provided, also cleans up user files (embeddings, physical storage)
+    before deleting the user.
+
+    Args:
+        inactive_days: Number of days of inactivity before deletion
+        vector_cleaner: Optional vector database cleaner for file cleanup
+        exempt_admin: Whether to exempt admin users from deletion
+        exempt_pending: Whether to exempt pending users from deletion
 
     Returns the number of users deleted.
     """
@@ -609,6 +685,7 @@ def delete_inactive_users(
 
     cutoff_time = int(time.time()) - (inactive_days * 86400)
     deleted_count = 0
+    total_files_deleted = 0
 
     try:
         users_to_delete = []
@@ -631,7 +708,13 @@ def delete_inactive_users(
         with get_db() as db:
             for user in users_to_delete:
                 try:
-                    # Delete the user - this will cascade to all their data
+                    # Delete user's files first (if vector_cleaner provided)
+                    # This ensures proper cleanup of embeddings, physical storage, etc.
+                    if vector_cleaner is not None:
+                        files_deleted = delete_user_files(user.id, vector_cleaner, db=db)
+                        total_files_deleted += files_deleted
+
+                    # Delete the user - CASCADE handles remaining associations
                     Users.delete_user_by_id(user.id, db=db)
                     deleted_count += 1
                     log.info(
@@ -642,6 +725,9 @@ def delete_inactive_users(
 
     except Exception as e:
         log.error(f"Error during inactive user deletion: {e}")
+
+    if total_files_deleted > 0:
+        log.info(f"Total files deleted from inactive users: {total_files_deleted}")
 
     return deleted_count
 
