@@ -113,6 +113,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.knowledge import Knowledge, Knowledges
     from open_webui.models.functions import Function, Functions
     from open_webui.models.tools import Tool, Tools
+    from open_webui.models.skills import Skill, Skills
     from open_webui.models.folders import Folder, Folders, FolderModel
     from open_webui.internal.db import get_db, get_db_context
     from open_webui.config import CACHE_DIR
@@ -135,6 +136,7 @@ elif _import_strategy == "git":
     from backend.open_webui.models.knowledge import Knowledge, Knowledges
     from backend.open_webui.models.functions import Function, Functions
     from backend.open_webui.models.tools import Tool, Tools
+    from backend.open_webui.models.skills import Skill, Skills
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
     from backend.open_webui.internal.db import get_db, get_db_context
     from backend.open_webui.config import CACHE_DIR
@@ -167,6 +169,8 @@ __all__ = [
     'Functions',
     'Tool',
     'Tools',
+    'Skill',
+    'Skills',
     'Folder',
     'Folders',
     'FolderModel',

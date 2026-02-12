@@ -54,7 +54,8 @@ try:
     from prune_imports import (
         Users, Chat, Chats, ChatFile, Message, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
-        Function, Functions, Tool, Tools, Folder, Folders, FolderModel,
+        Function, Functions, Tool, Tools, Skill, Skills,
+        Folder, Folders, FolderModel,
         get_db, get_db_context, CACHE_DIR
     )
 except ImportError as e:
@@ -181,6 +182,7 @@ def count_orphaned_records(
         "knowledge_bases": 0,
         "models": 0,
         "notes": 0,
+        "skills": 0,
         "folders": 0,
     }
 
@@ -203,6 +205,7 @@ def count_orphaned_records(
                 ("knowledge_bases", Knowledge, Knowledge.user_id, form_data.delete_orphaned_knowledge_bases),
                 ("models",         Model,     Model.user_id,     form_data.delete_orphaned_models),
                 ("notes",          Note,      Note.user_id,      form_data.delete_orphaned_notes),
+                ("skills",         Skill,     Skill.user_id,     form_data.delete_orphaned_skills),
                 ("folders",        Folder,    Folder.user_id,    form_data.delete_orphaned_folders),
             ]
 

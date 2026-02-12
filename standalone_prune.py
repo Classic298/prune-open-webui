@@ -52,7 +52,7 @@ try:
     )
     from prune_imports import (
         Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR
+        Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR
     )
     from sqlalchemy import text
     import time
@@ -211,6 +211,12 @@ Safety Features:
         help='Delete orphaned functions from deleted users'
     )
     parser.add_argument(
+        '--delete-orphaned-skills',
+        action='store_true',
+        default=False,
+        help='Delete orphaned skills from deleted users'
+    )
+    parser.add_argument(
         '--delete-orphaned-prompts',
         action='store_true',
         default=True,
@@ -307,6 +313,7 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_chats=args.delete_orphaned_chats,
         delete_orphaned_tools=args.delete_orphaned_tools,
         delete_orphaned_functions=args.delete_orphaned_functions,
+        delete_orphaned_skills=args.delete_orphaned_skills,
         delete_orphaned_prompts=args.delete_orphaned_prompts,
         delete_orphaned_knowledge_bases=args.delete_orphaned_knowledge_bases,
         delete_orphaned_models=args.delete_orphaned_models,
@@ -349,7 +356,8 @@ def print_preview_results(result: PrunePreviewResult):
 
     workspace_total = (result.orphaned_tools + result.orphaned_functions +
                        result.orphaned_prompts + result.orphaned_knowledge_bases +
-                       result.orphaned_models + result.orphaned_notes)
+                       result.orphaned_models + result.orphaned_notes +
+                       result.orphaned_skills)
     if workspace_total > 0:
         print(f"\n🔧 Workspace Items:")
         if result.orphaned_tools > 0:
@@ -364,6 +372,8 @@ def print_preview_results(result: PrunePreviewResult):
             print(f"   {result.orphaned_models} orphaned models")
         if result.orphaned_notes > 0:
             print(f"   {result.orphaned_notes} orphaned notes")
+        if result.orphaned_skills > 0:
+            print(f"   {result.orphaned_skills} orphaned skills")
         total_items += workspace_total
 
     if result.orphaned_folders > 0:
@@ -446,6 +456,7 @@ def run_prune(form_data: PruneDataForm):
                 orphaned_knowledge_bases=orphaned_counts["knowledge_bases"],
                 orphaned_models=orphaned_counts["models"],
                 orphaned_notes=orphaned_counts["notes"],
+                orphaned_skills=orphaned_counts["skills"],
                 orphaned_folders=orphaned_counts["folders"],
                 orphaned_uploads=count_orphaned_uploads(active_file_ids),
                 orphaned_vector_collections=vector_cleaner.count_orphaned_collections(
@@ -612,6 +623,19 @@ def run_prune(form_data: PruneDataForm):
                 log.info(f"Deleted {notes_deleted} orphaned notes")
         else:
             log.info("Skipping note deletion (disabled)")
+
+        if form_data.delete_orphaned_skills:
+            skills_deleted = 0
+            with get_db() as db:
+                for skill in Skills.get_skills(db=db):
+                    if skill.user_id not in active_user_ids:
+                        Skills.delete_skill_by_id(skill.id, db=db)
+                        skills_deleted += 1
+                        deleted_others += 1
+            if skills_deleted > 0:
+                log.info(f"Deleted {skills_deleted} orphaned skills")
+        else:
+            log.info("Skipping skill deletion (disabled)")
 
         if form_data.delete_orphaned_prompts:
             prompts_deleted = 0
@@ -803,6 +827,7 @@ def main():
     log.info(f"    Chats: {form_data.delete_orphaned_chats}")
     log.info(f"    Tools: {form_data.delete_orphaned_tools}")
     log.info(f"    Functions: {form_data.delete_orphaned_functions}")
+    log.info(f"    Skills: {form_data.delete_orphaned_skills}")
     log.info(f"    Prompts: {form_data.delete_orphaned_prompts}")
     log.info(f"    Knowledge Bases: {form_data.delete_orphaned_knowledge_bases}")
     log.info(f"    Models: {form_data.delete_orphaned_models}")
