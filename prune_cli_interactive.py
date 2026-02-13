@@ -54,7 +54,7 @@ try:
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
         Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB
+        Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB
     )
     import time
     import sqlite3
@@ -317,6 +317,7 @@ class InteractivePruneUI:
             ("Prompts", "delete_orphaned_prompts", "Custom prompts"),
             ("Models", "delete_orphaned_models", "Custom model configs"),
             ("Notes", "delete_orphaned_notes", "User notes"),
+            ("Skills", "delete_orphaned_skills", "Custom skills"),
         ]
 
         for name, attr, desc in items:
@@ -414,6 +415,7 @@ class InteractivePruneUI:
             ("Prompts", self.form_data.delete_orphaned_prompts),
             ("Models", self.form_data.delete_orphaned_models),
             ("Notes", self.form_data.delete_orphaned_notes),
+            ("Skills", self.form_data.delete_orphaned_skills),
             ("Folders", self.form_data.delete_orphaned_folders),
         ]
         for name, enabled in orphaned_items:
@@ -487,6 +489,7 @@ class InteractivePruneUI:
                     orphaned_knowledge_bases=orphaned_counts["knowledge_bases"],
                     orphaned_models=orphaned_counts["models"],
                     orphaned_notes=orphaned_counts["notes"],
+                    orphaned_skills=orphaned_counts["skills"],
                     orphaned_folders=orphaned_counts["folders"],
                     orphaned_uploads=count_orphaned_uploads(active_file_ids),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
@@ -595,6 +598,7 @@ class InteractivePruneUI:
                 task = progress.add_task("Deleting inactive users...", total=None)
                 deleted = delete_inactive_users(
                     self.form_data.delete_inactive_users_days,
+                    self.vector_cleaner,
                     self.form_data.exempt_admin_users,
                     self.form_data.exempt_pending_users,
                 )
@@ -732,6 +736,18 @@ class InteractivePruneUI:
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned notes")
+
+            # Skills
+            if self.form_data.delete_orphaned_skills:
+                task = progress.add_task("Deleting orphaned skills...", total=None)
+                deleted = 0
+                with get_db() as db:
+                    for skill in Skills.get_skills(db=db):
+                        if skill.user_id not in active_user_ids:
+                            Skills.delete_skill_by_id(skill.id, db=db)
+                            deleted += 1
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted} orphaned skills")
 
             # Folders
             if self.form_data.delete_orphaned_folders:

@@ -28,6 +28,7 @@ class PruneDataForm(BaseModel):
     delete_orphaned_knowledge_bases: bool = True
     delete_orphaned_models: bool = True
     delete_orphaned_notes: bool = True
+    delete_orphaned_skills: bool = False
     delete_orphaned_folders: bool = True
     audio_cache_max_age_days: Optional[int] = None  # Changed from 30 to None - must be explicitly enabled
     delete_inactive_users_days: Optional[int] = None
@@ -54,6 +55,7 @@ class PrunePreviewResult(BaseModel):
     orphaned_knowledge_bases: int = 0
     orphaned_models: int = 0
     orphaned_notes: int = 0
+    orphaned_skills: int = 0
     orphaned_folders: int = 0
     orphaned_uploads: int = 0
     orphaned_vector_collections: int = 0
@@ -72,6 +74,7 @@ class PrunePreviewResult(BaseModel):
             self.orphaned_knowledge_bases +
             self.orphaned_models +
             self.orphaned_notes +
+            self.orphaned_skills +
             self.orphaned_folders +
             self.orphaned_uploads +
             self.orphaned_vector_collections +
@@ -103,6 +106,7 @@ class PrunePreviewResult(BaseModel):
                 "Orphaned knowledge bases": self.orphaned_knowledge_bases,
                 "Orphaned models": self.orphaned_models,
                 "Orphaned notes": self.orphaned_notes,
+                "Orphaned skills": self.orphaned_skills,
             },
             "Organization": {
                 "Orphaned folders": self.orphaned_folders,

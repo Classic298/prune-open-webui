@@ -26,7 +26,7 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 The Prune Tool provides a safe and powerful way to clean up your Open WebUI instance by:
 - Deleting old chats and conversations
 - Removing inactive user accounts
-- Cleaning orphaned data (files, tools, prompts, etc.)
+- Cleaning orphaned data (files, tools, skills, prompts, etc.)
 - Removing old audio cache files
 - Optimizing database performance
 
@@ -385,6 +385,7 @@ python prune/prune.py \
 | `--delete-orphaned-chats` | flag | True | Clean orphaned chats |
 | `--delete-orphaned-tools` | flag | False | Clean orphaned tools |
 | `--delete-orphaned-functions` | flag | False | Clean orphaned functions |
+| `--delete-orphaned-skills` | flag | False | Clean orphaned skills |
 | `--delete-orphaned-prompts` | flag | True | Clean orphaned prompts |
 | `--delete-orphaned-knowledge-bases` | flag | True | Clean orphaned KBs |
 | `--delete-orphaned-models` | flag | True | Clean orphaned models |
@@ -439,7 +440,7 @@ crontab -e
 When you delete a user, **ALL their data is deleted**:
 - Chats and messages
 - Files and uploads
-- Custom tools and functions
+- Custom tools, functions, and skills
 - Knowledge bases and embeddings
 - Prompts, models, notes, folders
 - Everything they created
@@ -545,7 +546,7 @@ If operations are very slow:
 - Audio cache files (based on file `mtime`)
 
 **Orphaned Data:**
-- Chats/tools/prompts/etc. from deleted users
+- Chats/tools/skills/prompts/etc. from deleted users
 - Files not referenced in chats/KBs
 - Vector collections for deleted files/KBs
 - Physical upload files without DB records
