@@ -50,6 +50,7 @@ try:
         cleanup_orphaned_uploads,
         delete_inactive_users,
         cleanup_audio_cache,
+        delete_orphaned_chat_messages,
     )
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
@@ -318,6 +319,7 @@ class InteractivePruneUI:
             ("Models", "delete_orphaned_models", "Custom model configs"),
             ("Notes", "delete_orphaned_notes", "User notes"),
             ("Skills", "delete_orphaned_skills", "Custom skills"),
+            ("Chat Messages", "delete_orphaned_chat_messages", "Analytics data from deleted chats"),
         ]
 
         for name, attr, desc in items:
@@ -417,6 +419,7 @@ class InteractivePruneUI:
             ("Notes", self.form_data.delete_orphaned_notes),
             ("Skills", self.form_data.delete_orphaned_skills),
             ("Folders", self.form_data.delete_orphaned_folders),
+            ("Chat Messages", self.form_data.delete_orphaned_chat_messages),
         ]
         for name, enabled in orphaned_items:
             status = "[green]✓[/green]" if enabled else "[dim]✗[/dim]"
@@ -498,6 +501,7 @@ class InteractivePruneUI:
                     audio_cache_files=count_audio_cache_files(
                         self.form_data.audio_cache_max_age_days
                     ),
+                    orphaned_chat_messages=orphaned_counts["chat_messages"],
                 )
 
                 progress.update(task, completed=True)
@@ -760,6 +764,13 @@ class InteractivePruneUI:
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned folders")
+
+            # Orphaned chat messages
+            if self.form_data.delete_orphaned_chat_messages:
+                task = progress.add_task("Deleting orphaned chat messages...", total=None)
+                deleted = delete_orphaned_chat_messages()
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted} orphaned chat messages")
 
             # Stage 4: Cleanup physical files
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)

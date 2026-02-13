@@ -105,6 +105,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     # Import from open_webui.* (pip or backend in path)
     from open_webui.models.users import Users
     from open_webui.models.chats import Chat, Chats, ChatFile
+    from open_webui.models.chat_messages import ChatMessage
     from open_webui.models.messages import Message
     from open_webui.models.files import File, Files
     from open_webui.models.notes import Note, Notes
@@ -129,6 +130,7 @@ elif _import_strategy == "git":
     # Import from backend.open_webui.* (git installation)
     from backend.open_webui.models.users import Users
     from backend.open_webui.models.chats import Chat, Chats, ChatFile
+    from backend.open_webui.models.chat_messages import ChatMessage
     from backend.open_webui.models.messages import Message
     from backend.open_webui.models.files import File, Files
     from backend.open_webui.models.notes import Note, Notes
@@ -156,6 +158,7 @@ __all__ = [
     'Chat',
     'Chats',
     'ChatFile',
+    'ChatMessage',
     'Message',
     'File',
     'Files',

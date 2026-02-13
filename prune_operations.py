@@ -52,7 +52,7 @@ def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
-        Users, Chat, Chats, ChatFile, Message, File, Files, Note, Notes,
+        Users, Chat, Chats, ChatFile, ChatMessage, Message, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
         Folder, Folders, FolderModel, Storage,
@@ -184,6 +184,7 @@ def count_orphaned_records(
         "notes": 0,
         "skills": 0,
         "folders": 0,
+        "chat_messages": 0,
     }
 
     try:
@@ -215,10 +216,74 @@ def count_orphaned_records(
                         not_(user_id_col.in_(active_user_ids))
                     ).scalar() or 0
 
+            # Count orphaned chat_messages (chat_id references a chat that no longer exists)
+            if form_data.delete_orphaned_chat_messages:
+                try:
+                    counts["chat_messages"] = db.query(
+                        func.count(ChatMessage.id)
+                    ).filter(
+                        not_(ChatMessage.chat_id.in_(
+                            select(Chat.id)
+                        ))
+                    ).scalar() or 0
+                except Exception as e:
+                    log.debug(f"Error counting orphaned chat_messages (table may not exist yet): {e}")
+
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")
 
     return counts
+
+
+def count_orphaned_chat_messages() -> int:
+    """Count orphaned chat_message rows whose parent chat no longer exists.
+
+    These are left behind on SQLite because it does not enforce
+    ON DELETE CASCADE unless PRAGMA foreign_keys is enabled.
+    """
+    try:
+        with get_db_context() as db:
+            return db.query(
+                func.count(ChatMessage.id)
+            ).filter(
+                not_(ChatMessage.chat_id.in_(select(Chat.id)))
+            ).scalar() or 0
+    except Exception as e:
+        log.debug(f"Error counting orphaned chat_messages: {e}")
+        return 0
+
+
+def delete_orphaned_chat_messages() -> int:
+    """Delete chat_message rows whose parent chat no longer exists.
+
+    Returns the number of rows deleted.
+    """
+    try:
+        with get_db_context() as db:
+            orphaned_ids = db.query(ChatMessage.id).filter(
+                not_(ChatMessage.chat_id.in_(select(Chat.id)))
+            ).all()
+            orphan_id_list = [r.id for r in orphaned_ids]
+
+            if not orphan_id_list:
+                return 0
+
+            # Delete in batches to avoid SQLite variable limits
+            deleted = 0
+            batch_size = 500
+            for i in range(0, len(orphan_id_list), batch_size):
+                batch = orphan_id_list[i:i + batch_size]
+                deleted += db.query(ChatMessage).filter(
+                    ChatMessage.id.in_(batch)
+                ).delete()
+            db.commit()
+
+            if deleted > 0:
+                log.info(f"Deleted {deleted} orphaned chat_message rows")
+            return deleted
+    except Exception as e:
+        log.error(f"Error deleting orphaned chat_messages: {e}")
+        return 0
 
 
 def count_orphaned_uploads(active_file_ids: Set[str]) -> int:

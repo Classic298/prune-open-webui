@@ -49,6 +49,7 @@ try:
         cleanup_orphaned_uploads,
         delete_inactive_users,
         cleanup_audio_cache,
+        delete_orphaned_chat_messages,
     )
     from prune_imports import (
         Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
@@ -246,6 +247,18 @@ Safety Features:
         default=True,
         help='Delete orphaned folders from deleted users (default: True)'
     )
+    parser.add_argument(
+        '--delete-orphaned-chat-messages',
+        action='store_true',
+        default=True,
+        help='Delete orphaned chat_message rows from deleted chats (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-chat-messages',
+        action='store_false',
+        dest='delete_orphaned_chat_messages',
+        help='Skip orphaned chat_message deletion'
+    )
 
     # Audio cache cleanup
     parser.add_argument(
@@ -319,6 +332,7 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_models=args.delete_orphaned_models,
         delete_orphaned_notes=args.delete_orphaned_notes,
         delete_orphaned_folders=args.delete_orphaned_folders,
+        delete_orphaned_chat_messages=args.delete_orphaned_chat_messages,
         audio_cache_max_age_days=args.audio_cache_max_age_days,
         delete_inactive_users_days=args.delete_inactive_users_days,
         exempt_admin_users=args.exempt_admin_users,
@@ -341,13 +355,15 @@ def print_preview_results(result: PrunePreviewResult):
         print(f"   {result.inactive_users} user accounts")
         total_items += result.inactive_users
 
-    if result.old_chats > 0 or result.orphaned_chats > 0:
+    if result.old_chats > 0 or result.orphaned_chats > 0 or result.orphaned_chat_messages > 0:
         print(f"\n💬 Chats:")
         if result.old_chats > 0:
             print(f"   {result.old_chats} old chats (age-based)")
         if result.orphaned_chats > 0:
             print(f"   {result.orphaned_chats} orphaned chats")
-        total_items += result.old_chats + result.orphaned_chats
+        if result.orphaned_chat_messages > 0:
+            print(f"   {result.orphaned_chat_messages} orphaned chat messages")
+        total_items += result.old_chats + result.orphaned_chats + result.orphaned_chat_messages
 
     if result.orphaned_files > 0:
         print(f"\n📁 Files:")
@@ -465,6 +481,7 @@ def run_prune(form_data: PruneDataForm):
                 audio_cache_files=count_audio_cache_files(
                     form_data.audio_cache_max_age_days
                 ),
+                orphaned_chat_messages=orphaned_counts["chat_messages"],
             )
 
             log.info("Data pruning preview completed")
@@ -681,6 +698,14 @@ def run_prune(form_data: PruneDataForm):
 
         if deleted_others > 0:
             log.info(f"Total other orphaned records deleted: {deleted_others}")
+
+        # Stage 3b: Delete orphaned chat messages
+        if form_data.delete_orphaned_chat_messages:
+            deleted_chat_messages = delete_orphaned_chat_messages()
+            if deleted_chat_messages > 0:
+                log.info(f"Deleted {deleted_chat_messages} orphaned chat messages")
+        else:
+            log.info("Skipping orphaned chat_message deletion (disabled)")
 
         # Stage 4: Clean up orphaned physical files
         log.info("Cleaning up orphaned physical files")
