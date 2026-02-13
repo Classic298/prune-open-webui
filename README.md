@@ -391,6 +391,7 @@ python prune/prune.py \
 | `--delete-orphaned-models` | flag | True | Clean orphaned models |
 | `--delete-orphaned-notes` | flag | True | Clean orphaned notes |
 | `--delete-orphaned-folders` | flag | True | Clean orphaned folders |
+| `--delete-orphaned-chat-messages` | flag | True | Clean orphaned chat_message rows |
 | `--audio-cache-max-age-days N` | int | 30 | Clean audio files older than N days |
 | `--run-vacuum` | flag | False | Run database optimization (locks DB!) |
 | `--dry-run` | flag | True | Preview only (default) |
@@ -547,9 +548,13 @@ If operations are very slow:
 
 **Orphaned Data:**
 - Chats/tools/skills/prompts/etc. from deleted users
+- Chat messages (analytics metadata) from deleted chats — see note below
 - Files not referenced in chats/KBs
 - Vector collections for deleted files/KBs
 - Physical upload files without DB records
+
+> [!NOTE]
+> SQLite does not enforce `ON DELETE CASCADE` by default. This means deleting a chat may leave behind orphaned rows in the `chat_message` table (used by the Analytics feature). The prune tool detects and removes these automatically. PostgreSQL users are not affected.
 
 **Preserved:**
 - Active user accounts

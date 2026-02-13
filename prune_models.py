@@ -30,6 +30,7 @@ class PruneDataForm(BaseModel):
     delete_orphaned_notes: bool = True
     delete_orphaned_skills: bool = False
     delete_orphaned_folders: bool = True
+    delete_orphaned_chat_messages: bool = True
     audio_cache_max_age_days: Optional[int] = None  # Changed from 30 to None - must be explicitly enabled
     delete_inactive_users_days: Optional[int] = None
     exempt_admin_users: bool = True
@@ -59,6 +60,7 @@ class PrunePreviewResult(BaseModel):
     orphaned_folders: int = 0
     orphaned_uploads: int = 0
     orphaned_vector_collections: int = 0
+    orphaned_chat_messages: int = 0
     audio_cache_files: int = 0
 
     def total_items(self) -> int:
@@ -78,6 +80,7 @@ class PrunePreviewResult(BaseModel):
             self.orphaned_folders +
             self.orphaned_uploads +
             self.orphaned_vector_collections +
+            self.orphaned_chat_messages +
             self.audio_cache_files
         )
 
@@ -94,6 +97,7 @@ class PrunePreviewResult(BaseModel):
             "Chats": {
                 "Old chats (age-based)": self.old_chats,
                 "Orphaned chats": self.orphaned_chats,
+                "Orphaned chat messages": self.orphaned_chat_messages,
             },
             "Files": {
                 "Orphaned file records": self.orphaned_files,
