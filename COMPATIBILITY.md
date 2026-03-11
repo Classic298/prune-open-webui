@@ -7,5 +7,5 @@ This document tracks which minimum version of the Prune Tool is required for eac
 
 | Open WebUI Version | Minimum Prune Version Number | Notes |
 |---|---|---|
-| v0.8.0 | v1.0.1 | [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.0.1) |
-| v0.7.X | v1.0.0 | Initial release |
+| v0.8.0+ | v1.0.1 | [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.0.1) |
+| v0.7.X  | v1.0.0 | Initial release |
