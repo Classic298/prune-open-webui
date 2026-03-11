@@ -1781,13 +1781,22 @@ class NoOpVectorDatabaseCleaner(VectorDatabaseCleaner):
         return True
 
 
-def get_vector_database_cleaner(vector_db_type: str, vector_db_client, cache_dir: Path) -> VectorDatabaseCleaner:
+def get_vector_database_cleaner(
+    vector_db_type: str,
+    vector_db_client,
+    cache_dir: Path,
+    enable_milvus_multitenancy: bool = False,
+    enable_qdrant_multitenancy: bool = False,
+) -> VectorDatabaseCleaner:
     """
     Factory function to get the appropriate vector database cleaner.
 
     This function detects the configured vector database type and returns
     the appropriate cleaner implementation. Community contributors can
     extend this function to support additional vector databases.
+
+    Multitenancy detection uses the Open WebUI config flags
+    (ENABLE_MILVUS_MULTITENANCY_MODE, ENABLE_QDRANT_MULTITENANCY_MODE).
 
     Supported databases:
     - ChromaDB: SQLite-based vector database with directory storage
@@ -1809,16 +1818,14 @@ def get_vector_database_cleaner(vector_db_type: str, vector_db_client, cache_dir
         log.debug("Using PGVector cleaner")
         return PGVectorDatabaseCleaner(vector_db_client)
     elif "milvus" in vector_db_type:
-        # Detect multitenancy mode by checking for shared_collections attribute
-        if hasattr(vector_db_client, 'shared_collections'):
+        if enable_milvus_multitenancy:
             log.debug("Using Milvus Multitenancy cleaner")
             return MilvusMultitenancyDatabaseCleaner(vector_db_client)
         else:
             log.debug("Using Milvus standard cleaner")
             return MilvusDatabaseCleaner(vector_db_client)
     elif "qdrant" in vector_db_type:
-        # Detect multitenancy mode by checking for shared_collections attribute
-        if hasattr(vector_db_client, 'shared_collections'):
+        if enable_qdrant_multitenancy:
             log.debug("Using Qdrant Multitenancy cleaner")
             return QdrantMultitenancyDatabaseCleaner(vector_db_client)
         else:
@@ -1829,3 +1836,5 @@ def get_vector_database_cleaner(vector_db_type: str, vector_db_client, cache_dir
             f"No specific cleaner for vector database type: {vector_db_type}, using no-op cleaner"
         )
         return NoOpVectorDatabaseCleaner()
+
+
