@@ -25,7 +25,7 @@ try:
     from rich.prompt import Prompt, Confirm, IntPrompt
     from rich.table import Table
     from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
     from rich.markdown import Markdown
     from rich import box
     from rich.tree import Tree
@@ -78,6 +78,10 @@ class InteractivePruneUI:
     def __init__(self):
         self.form_data = PruneDataForm()
         self.vector_cleaner = None
+        # Cached from last preview run — reused by export
+        self._active_file_ids = set()
+        self._active_kb_ids = set()
+        self._active_user_ids = set()
 
     def _get_all_folders_safe(self, db=None):
         """
@@ -459,18 +463,18 @@ class InteractivePruneUI:
             task = progress.add_task("Analyzing database...", total=None)
 
             try:
-                # Build sets
+                # Build sets and cache on self for export reuse
                 knowledge_bases = Knowledges.get_knowledge_bases()
                 all_users = Users.get_users()["users"]
-                active_user_ids = {user.id for user in all_users}
-                active_kb_ids = {
+                self._active_user_ids = {user.id for user in all_users}
+                self._active_kb_ids = {
                     kb.id
                     for kb in knowledge_bases
-                    if kb.user_id in active_user_ids
+                    if kb.user_id in self._active_user_ids
                 }
-                active_file_ids = get_active_file_ids(knowledge_bases, active_user_ids)
+                self._active_file_ids = get_active_file_ids(knowledge_bases, self._active_user_ids)
 
-                orphaned_counts = count_orphaned_records(self.form_data, active_file_ids, active_user_ids)
+                orphaned_counts = count_orphaned_records(self.form_data, self._active_file_ids, self._active_user_ids)
 
                 result = PrunePreviewResult(
                     inactive_users=count_inactive_users(
@@ -494,9 +498,9 @@ class InteractivePruneUI:
                     orphaned_notes=orphaned_counts["notes"],
                     orphaned_skills=orphaned_counts["skills"],
                     orphaned_folders=orphaned_counts["folders"],
-                    orphaned_uploads=count_orphaned_uploads(active_file_ids),
+                    orphaned_uploads=count_orphaned_uploads(self._active_file_ids),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
-                        active_file_ids, active_kb_ids, active_user_ids
+                        self._active_file_ids, self._active_kb_ids, self._active_user_ids
                     ),
                     audio_cache_files=count_audio_cache_files(
                         self.form_data.audio_cache_max_age_days
@@ -514,6 +518,10 @@ class InteractivePruneUI:
         # Display results
         console.print()
         self.display_preview_results(result)
+
+        # Offer CSV export if there are items
+        if result.has_items():
+            self._offer_export(result)
 
         console.print()
         Prompt.ask("Press Enter to continue")
@@ -543,6 +551,77 @@ class InteractivePruneUI:
         console.print("\n" + "=" * 70)
         console.print(f"[bold red]TOTAL ITEMS: {result.total_items():,}[/bold red]")
         console.print("=" * 70)
+
+    def _offer_export(self, result: PrunePreviewResult):
+        """Offer to export detailed preview to CSV with double confirmation."""
+        from prune_export import PreviewExporter, format_size
+
+        exporter = PreviewExporter(
+            form_data=self.form_data,
+            vector_cleaner=self.vector_cleaner,
+            active_file_ids=self._active_file_ids,
+            active_kb_ids=self._active_kb_ids,
+            active_user_ids=self._active_user_ids,
+        )
+
+        estimated_bytes = exporter.estimate_size(result)
+        estimated_human = format_size(estimated_bytes)
+
+        # ── Confirmation 1: Do you want to export? ──
+        console.print()
+        export_choice = Prompt.ask(
+            "[bold]Export detailed item list to CSV?[/bold]",
+            choices=["yes", "no"],
+            default="no",
+        )
+
+        if export_choice == "no":
+            return
+
+        # ── Show size estimate + ask for path ──
+        console.print(f"\n  Items: [yellow]{result.total_items():,}[/yellow]")
+        console.print(f"  Estimated file size: [yellow]~{estimated_human}[/yellow]")
+
+        if estimated_bytes > 1024 * 1024 * 1024:  # > 1 GB
+            console.print(
+                "  [bold yellow]⚠ Large export — may take several minutes"
+                " and consume significant disk space[/bold yellow]"
+            )
+
+        path_input = Prompt.ask(
+            "\n  Enter file path",
+            default="prune_preview.csv",
+        )
+        output_path = Path(path_input)
+
+        # ── Confirmation 2: Confirm with size ──
+        confirm = Prompt.ask(
+            f"  Write ~{estimated_human} to {output_path}?",
+            choices=["yes", "no"],
+            default="yes",
+        )
+
+        if confirm == "no":
+            console.print("  Export cancelled.")
+            return
+
+        # ── Export with progress bar ──
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Exporting...", total=result.total_items())
+            rows = exporter.export(
+                output_path,
+                result,
+                progress_callback=lambda n: progress.advance(task, n),
+            )
+
+        console.print(f"\n  [green]✓[/green] Exported [bold]{rows:,}[/bold] rows to [cyan]{output_path}[/cyan]")
 
     def confirm_execution(self) -> bool:
         """Confirm execution with multiple warnings."""
