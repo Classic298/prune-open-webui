@@ -41,6 +41,7 @@ It runs independently of the web server and can be scheduled for automated maint
 ✅ **Complete Configurability**
 - All configuration options are fully configurable
 - Preview mode to see what will be deleted before execution
+- Export detailed preview to CSV for auditing before execution
 - Fine-grained control over what gets deleted
 
 ✅ **Database Support**
@@ -83,6 +84,7 @@ open-webui/              # Your Open WebUI root
 │   ├── prune.py         # Main entry point
 │   ├── prune_cli_interactive.py
 │   ├── prune_core.py
+│   ├── prune_export.py
 │   ├── prune_operations.py
 │   ├── prune_imports.py
 │   ├── prune_models.py
@@ -337,6 +339,19 @@ python prune/prune.py \
   --execute
 ```
 
+### Export Preview to CSV
+
+Before running a destructive operation, export a detailed list of every item that would be deleted to a CSV file for auditing:
+
+```bash
+# Export preview to CSV (non-interactive)
+python prune/prune.py --days 90 --dry-run --export-preview preview.csv
+```
+
+The interactive mode also offers export after each preview — with size estimation and a progress bar.
+
+The CSV contains one row per item with columns: `category`, `id`, `name`, `owner_id`, `size_bytes`, `reason`. The `size_bytes` column is populated for physical files (uploads and audio cache); other categories leave it empty.
+
 ## Usage
 
 ### Basic Patterns
@@ -398,6 +413,7 @@ python prune/prune.py \
 | `--execute` | flag | - | Actually perform deletions |
 | `--verbose, -v` | flag | - | Enable debug logging |
 | `--quiet, -q` | flag | - | Suppress non-error output |
+| `--export-preview PATH` | str | None | Export detailed preview to CSV (requires `--dry-run`) |
 
 ### Using Flags
 
