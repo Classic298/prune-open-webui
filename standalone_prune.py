@@ -53,7 +53,8 @@ try:
     )
     from prune_imports import (
         Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR
+        Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR,
+        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
     from sqlalchemy import text
     import time
@@ -434,7 +435,11 @@ def run_prune(form_data: PruneDataForm):
 
     try:
         # Get vector database cleaner based on configuration
-        vector_cleaner = get_vector_database_cleaner(VECTOR_DB, VECTOR_DB_CLIENT, Path(CACHE_DIR))
+        vector_cleaner = get_vector_database_cleaner(
+            VECTOR_DB, VECTOR_DB_CLIENT, Path(CACHE_DIR),
+            enable_milvus_multitenancy=ENABLE_MILVUS_MULTITENANCY_MODE,
+            enable_qdrant_multitenancy=ENABLE_QDRANT_MULTITENANCY_MODE,
+        )
 
         if form_data.dry_run:
             log.info("Starting data pruning preview (dry run)")

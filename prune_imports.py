@@ -126,6 +126,11 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
         VECTOR_DB_CLIENT = None
         VECTOR_DB = None
 
+    from open_webui.config import (
+        ENABLE_QDRANT_MULTITENANCY_MODE,
+        ENABLE_MILVUS_MULTITENANCY_MODE,
+    )
+
 elif _import_strategy == "git":
     # Import from backend.open_webui.* (git installation)
     from backend.open_webui.models.users import Users
@@ -150,6 +155,11 @@ elif _import_strategy == "git":
     except ImportError:
         VECTOR_DB_CLIENT = None
         VECTOR_DB = None
+
+    from backend.open_webui.config import (
+        ENABLE_QDRANT_MULTITENANCY_MODE,
+        ENABLE_MILVUS_MULTITENANCY_MODE,
+    )
 
 
 # Export all for easy importing
@@ -185,6 +195,8 @@ __all__ = [
     'CACHE_DIR',
     'VECTOR_DB_CLIENT',
     'VECTOR_DB',
+    'ENABLE_QDRANT_MULTITENANCY_MODE',
+    'ENABLE_MILVUS_MULTITENANCY_MODE',
     '_import_strategy',
 ]
 

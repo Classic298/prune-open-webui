@@ -55,7 +55,8 @@ try:
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
         Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB
+        Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
+        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
     import time
     import sqlite3
@@ -139,7 +140,9 @@ class InteractivePruneUI:
 
             # Initialize vector cleaner
             self.vector_cleaner = get_vector_database_cleaner(
-                VECTOR_DB, VECTOR_DB_CLIENT, Path(CACHE_DIR)
+                VECTOR_DB, VECTOR_DB_CLIENT, Path(CACHE_DIR),
+                enable_milvus_multitenancy=ENABLE_MILVUS_MULTITENANCY_MODE,
+                enable_qdrant_multitenancy=ENABLE_QDRANT_MULTITENANCY_MODE,
             )
             console.print(f"[green]✓[/green] Vector database: {VECTOR_DB}")
 
