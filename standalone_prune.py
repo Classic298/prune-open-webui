@@ -294,6 +294,15 @@ Safety Features:
         help='Suppress all output except errors'
     )
 
+    # Export
+    parser.add_argument(
+        '--export-preview',
+        type=str,
+        default=None,
+        metavar='PATH',
+        help='Export detailed preview to CSV file (requires --dry-run)'
+    )
+
     args = parser.parse_args()
 
     # If neither --dry-run nor --execute specified, default to dry-run
@@ -304,6 +313,10 @@ Safety Features:
     # Can't have both dry-run and execute
     if args.dry_run and args.execute:
         parser.error("Cannot specify both --dry-run and --execute")
+
+    # --export-preview requires --dry-run
+    if args.export_preview and not args.dry_run:
+        parser.error("--export-preview requires --dry-run mode")
 
     return args
 
@@ -423,7 +436,7 @@ def print_preview_results(result: PrunePreviewResult):
     print()
 
 
-def run_prune(form_data: PruneDataForm):
+def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
     """
     Execute the prune operation with the given configuration.
     This replicates the logic from prune.py's prune_data function.
@@ -491,6 +504,27 @@ def run_prune(form_data: PruneDataForm):
 
             log.info("Data pruning preview completed")
             print_preview_results(result)
+
+            # Export detailed preview to CSV if requested
+            if export_preview_path and result.has_items():
+                from prune_export import PreviewExporter, format_size
+
+                exporter = PreviewExporter(
+                    form_data=form_data,
+                    vector_cleaner=vector_cleaner,
+                    active_file_ids=active_file_ids,
+                    active_kb_ids=active_kb_ids,
+                    active_user_ids=active_user_ids,
+                )
+
+                estimated_human = format_size(exporter.estimate_size(result))
+                log.info(
+                    f"Exporting {result.total_items()} items (~{estimated_human}) "
+                    f"to {export_preview_path}"
+                )
+                rows = exporter.export(Path(export_preview_path), result)
+                log.info(f"Exported {rows} rows to {export_preview_path}")
+
             return True
 
         # Actual deletion logic (dry_run=False)
@@ -874,7 +908,7 @@ def main():
     log.info("")
 
     # Run the prune operation
-    success = run_prune(form_data)
+    success = run_prune(form_data, export_preview_path=args.export_preview)
 
     if success:
         log.info("\n✓ Prune operation completed successfully")

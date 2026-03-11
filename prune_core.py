@@ -14,7 +14,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Set
+from typing import Generator, Optional, Set, Tuple
 from abc import ABC, abstractmethod
 
 # Optional database-specific imports
@@ -287,6 +287,30 @@ class VectorDatabaseCleaner(ABC):
         """
         pass
 
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """
+        Yield (orphaned_id, context) for each orphaned vector item.
+
+        Used by the export feature to list individual orphaned items.
+        Default implementation yields nothing. Subclasses override to
+        provide actual iteration.
+
+        Args:
+            active_file_ids: Set of file IDs that are still referenced
+            active_kb_ids: Set of knowledge base IDs that are still active
+            active_user_ids: Set of user IDs that are still active
+
+        Yields:
+            (orphaned_id, context_string) — e.g. ("file-abc-123", "chromadb")
+        """
+        return
+        yield  # pragma: no cover — makes this a generator
+
 
 class ChromaDatabaseCleaner(VectorDatabaseCleaner):
     """
@@ -338,6 +362,34 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             log.debug(f"Error counting orphaned ChromaDB collections: {e}")
 
         return count
+
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (collection_name, context) for each orphaned ChromaDB collection."""
+        if not self.chroma_db_path.exists():
+            return
+
+        expected_collections = self._build_expected_collections(
+            active_file_ids, active_kb_ids
+        )
+        uuid_to_collection = self._get_collection_mappings()
+
+        try:
+            for collection_dir in self.vector_dir.iterdir():
+                if not collection_dir.is_dir() or collection_dir.name.startswith("."):
+                    continue
+
+                dir_uuid = collection_dir.name
+                collection_name = uuid_to_collection.get(dir_uuid)
+
+                if collection_name is None or collection_name not in expected_collections:
+                    yield (collection_name or dir_uuid, "chromadb")
+        except Exception as e:
+            log.debug(f"Error iterating orphaned ChromaDB collections: {e}")
 
     def cleanup_orphaned_collections(
         self,
@@ -724,6 +776,28 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
             log.error(f"Error counting orphaned PGVector collections: {e}")
             return 0
 
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (collection_name, context) for each orphaned PGVector collection."""
+        if not self.session:
+            return
+
+        try:
+            orphaned_collections = self._get_orphaned_collections(
+                active_file_ids, active_kb_ids
+            )
+            self.session.rollback()
+            for name in orphaned_collections:
+                yield (name, "pgvector")
+        except Exception as e:
+            if self.session:
+                self.session.rollback()
+            log.debug(f"Error iterating orphaned PGVector collections: {e}")
+
     def cleanup_orphaned_collections(
         self,
         active_file_ids: Set[str],
@@ -943,6 +1017,29 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
             log.error(f"Error counting orphaned Milvus collections: {e}")
             return 0
 
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (original_name, full_collection_name) for each orphaned Milvus collection."""
+        try:
+            expected_collections = self._build_expected_collections(
+                active_file_ids, active_kb_ids
+            )
+            all_collections = self.vector_db_client.client.list_collections()
+
+            for collection_name in all_collections:
+                if collection_name.startswith(f"{self.collection_prefix}_"):
+                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = original_name.replace("_", "-")
+
+                    if original_name not in expected_collections:
+                        yield (original_name, collection_name)
+        except Exception as e:
+            log.debug(f"Error iterating orphaned Milvus collections: {e}")
+
     def cleanup_orphaned_collections(
         self,
         active_file_ids: Set[str],
@@ -1137,6 +1234,50 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         except Exception as e:
             log.error(f"Error counting orphaned Milvus multitenancy collections: {e}")
             return 0
+
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (resource_id, shared_collection_name) for each orphaned Milvus MT resource."""
+        try:
+            expected_resource_ids = self._build_expected_resource_ids(
+                active_file_ids, active_kb_ids, active_user_ids
+            )
+
+            for shared_collection_name in self.shared_collections:
+                if not utility.has_collection(shared_collection_name):
+                    continue
+
+                try:
+                    collection = Collection(shared_collection_name)
+                    collection.load()
+
+                    all_resource_ids = set()
+                    iterator = collection.query_iterator(
+                        expr="",
+                        output_fields=["resource_id"],
+                        batch_size=1000,
+                    )
+
+                    while True:
+                        results = iterator.next()
+                        if not results:
+                            iterator.close()
+                            break
+                        all_resource_ids.update(res["resource_id"] for res in results)
+
+                    for resource_id in all_resource_ids:
+                        if resource_id not in expected_resource_ids:
+                            yield (resource_id, shared_collection_name)
+
+                except Exception as e:
+                    log.debug(f"Error iterating shared collection {shared_collection_name}: {e}")
+
+        except Exception as e:
+            log.debug(f"Error iterating orphaned Milvus MT collections: {e}")
 
     def cleanup_orphaned_collections(
         self,
@@ -1377,6 +1518,28 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
 
         return count
 
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (original_name, full_collection_name) for each orphaned Qdrant collection."""
+        try:
+            expected_collections = self._build_expected_collections(
+                active_file_ids, active_kb_ids
+            )
+            all_collections = self.client.get_collections().collections
+
+            for collection in all_collections:
+                collection_name = collection.name
+                if collection_name.startswith(f"{self.collection_prefix}_"):
+                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    if original_name not in expected_collections:
+                        yield (original_name, collection_name)
+        except Exception as e:
+            log.debug(f"Error iterating orphaned Qdrant collections: {e}")
+
     def cleanup_orphaned_collections(
         self,
         active_file_ids: Set[str],
@@ -1558,6 +1721,57 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
             return 0
 
         return orphaned_count
+
+    def iter_orphaned_collections(
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (tenant_id, shared_collection_name) for each orphaned Qdrant MT tenant."""
+        try:
+            expected_tenant_ids = self._build_expected_tenant_ids(
+                active_file_ids, active_kb_ids, active_user_ids or set()
+            )
+
+            for collection_name in self.shared_collections:
+                if not self.client.collection_exists(collection_name=collection_name):
+                    continue
+
+                try:
+                    all_tenant_ids = set()
+                    offset = None
+
+                    while True:
+                        scroll_result = self.client.scroll(
+                            collection_name=collection_name,
+                            limit=1000,
+                            offset=offset,
+                            with_payload=True,
+                            with_vectors=False,
+                        )
+
+                        points, next_offset = scroll_result
+                        if not points:
+                            break
+
+                        for point in points:
+                            if 'tenant_id' in point.payload:
+                                all_tenant_ids.add(point.payload['tenant_id'])
+
+                        if next_offset is None:
+                            break
+                        offset = next_offset
+
+                    for tenant_id in all_tenant_ids:
+                        if tenant_id not in expected_tenant_ids:
+                            yield (tenant_id, collection_name)
+
+                except Exception as e:
+                    log.debug(f"Error iterating Qdrant collection {collection_name}: {e}")
+
+        except Exception as e:
+            log.debug(f"Error iterating orphaned Qdrant MT tenant_ids: {e}")
 
     def cleanup_orphaned_collections(
         self,
