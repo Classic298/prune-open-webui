@@ -572,13 +572,7 @@ class InteractivePruneUI:
 
         # ── Confirmation 1: Do you want to export? ──
         console.print()
-        export_choice = Prompt.ask(
-            "[bold]Export detailed item list to CSV?[/bold]",
-            choices=["yes", "no"],
-            default="no",
-        )
-
-        if export_choice == "no":
+        if not Confirm.ask("[bold]Export detailed item list to CSV?[/bold]", default=False):
             return
 
         # ── Show size estimate + ask for path ──
@@ -598,33 +592,31 @@ class InteractivePruneUI:
         output_path = Path(path_input)
 
         # ── Confirmation 2: Confirm with size ──
-        confirm = Prompt.ask(
-            f"  Write ~{estimated_human} to {output_path}?",
-            choices=["yes", "no"],
-            default="yes",
-        )
-
-        if confirm == "no":
+        if not Confirm.ask(f"  Write ~{estimated_human} to {output_path}?", default=True):
             console.print("  Export cancelled.")
             return
 
         # ── Export with progress bar ──
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Exporting...", total=result.total_items())
-            rows = exporter.export(
-                output_path,
-                result,
-                progress_callback=lambda n: progress.advance(task, n),
-            )
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Exporting...", total=result.total_items())
+                rows = exporter.export(
+                    output_path,
+                    result,
+                    progress_callback=lambda n: progress.advance(task, n),
+                )
 
-        console.print(f"\n  [green]✓[/green] Exported [bold]{rows:,}[/bold] rows to [cyan]{output_path}[/cyan]")
+            console.print(f"\n  [green]✓[/green] Exported [bold]{rows:,}[/bold] rows to [cyan]{output_path}[/cyan]")
+        except (OSError, PermissionError) as e:
+            console.print(f"\n  [red]✗ Failed to write export file:[/red] {e}")
+            console.print("  Please check the path and try again.")
 
     def confirm_execution(self) -> bool:
         """Confirm execution with multiple warnings."""
