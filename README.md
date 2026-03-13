@@ -428,7 +428,7 @@ python prune/prune.py --delete-inactive-users-days 180 --no-exempt-admin-users -
 
 ## Automation
 
-### Cron Job Example
+### Cron Job Example (Native / Systemd / pip Installs)
 
 ```bash
 # Edit crontab
@@ -439,6 +439,87 @@ crontab -e
 
 # Monthly full cleanup with VACUUM (first Sunday at 3 AM)
 0 3 1-7 * 0 /path/to/run_prune.sh --days 60 --delete-inactive-users-days 180 --run-vacuum --execute >> /var/log/openwebui-prune-monthly.log 2>&1
+```
+
+### Docker Automation (Host-Side Cron)
+
+Standard Open WebUI Docker containers **do not include cron**. The recommended approach is to schedule the cron job on your **host machine** and use `docker exec` to run the headless prune script inside the running container.
+
+This works because `docker exec` runs a command inside an already-running container, inheriting its environment variables, Python dependencies, and database access — everything the prune script needs.
+
+**Step 1: Mount the prune folder into your container**
+
+Make sure your `docker-compose.yml` mounts the prune directory:
+
+```yaml
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    volumes:
+      - open-webui:/app/backend/data
+      - ./prune:/app/prune          # Mount the prune tool
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - DATABASE_URL=sqlite:////app/backend/data/webui.db
+    ports:
+      - "3000:8080"
+```
+
+> **Tip:** Mounting the folder (instead of `docker cp`) keeps the prune scripts in sync with your local copy and avoids having to re-copy after updates.
+
+**Step 2: Verify it works manually**
+
+```bash
+# Preview mode first (safe, no changes)
+docker exec open-webui python /app/prune/prune.py --days 90 --dry-run
+
+# If the preview looks good, run with --execute
+docker exec open-webui python /app/prune/prune.py --days 90 --execute
+```
+
+**Step 3: Add a cron job on the host**
+
+```bash
+# Edit the HOST machine's crontab (not inside the container)
+crontab -e
+
+# Weekly cleanup every Sunday at 2 AM
+0 2 * * 0 docker exec open-webui python /app/prune/prune.py --days 90 --audio-cache-max-age-days 30 --execute >> /var/log/openwebui-prune.log 2>&1
+
+# Monthly full cleanup with VACUUM (first Sunday at 3 AM)
+0 3 1-7 * 0 docker exec open-webui python /app/prune/prune.py --days 60 --delete-inactive-users-days 180 --run-vacuum --execute >> /var/log/openwebui-prune-monthly.log 2>&1
+```
+
+> **Note:** Replace `open-webui` with your actual container name. Find it with `docker ps | grep open-webui`.
+
+**Optional: Host-side wrapper script**
+
+For cleaner cron entries, create a small wrapper script on the host:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/openwebui-prune-docker
+# Wrapper to run prune inside the Open WebUI container from the host
+
+CONTAINER_NAME="${OPENWEBUI_CONTAINER:-open-webui}"
+
+# Check if the container is running
+if ! docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null | grep -q true; then
+    echo "ERROR: Container '$CONTAINER_NAME' is not running" >&2
+    exit 1
+fi
+
+# Run prune script inside the container, forwarding all arguments
+docker exec "$CONTAINER_NAME" python /app/prune/prune.py "$@"
+```
+
+Make it executable and use it in cron:
+
+```bash
+chmod +x /usr/local/bin/openwebui-prune-docker
+
+# Now cron entries are cleaner:
+0 2 * * 0 /usr/local/bin/openwebui-prune-docker --days 90 --execute >> /var/log/openwebui-prune.log 2>&1
 ```
 
 ### Best Practices for Automation
