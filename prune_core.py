@@ -856,7 +856,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
                         DELETE FROM document_chunk dc
                         WHERE dc.vmetadata ? 'file_id'
                           AND NOT EXISTS (
-                            SELECT 1 FROM files f
+                            SELECT 1 FROM file f
                             WHERE f.id = (dc.vmetadata->>'file_id')
                           )
                     """))
