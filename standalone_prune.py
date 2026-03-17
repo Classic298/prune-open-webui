@@ -225,10 +225,22 @@ Safety Features:
         help='Delete orphaned prompts from deleted users (default: True)'
     )
     parser.add_argument(
+        '--no-delete-orphaned-prompts',
+        action='store_false',
+        dest='delete_orphaned_prompts',
+        help='Skip orphaned prompt deletion'
+    )
+    parser.add_argument(
         '--delete-orphaned-knowledge-bases',
         action='store_true',
         default=True,
         help='Delete orphaned knowledge bases from deleted users (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-knowledge-bases',
+        action='store_false',
+        dest='delete_orphaned_knowledge_bases',
+        help='Skip orphaned knowledge base deletion'
     )
     parser.add_argument(
         '--delete-orphaned-models',
@@ -237,16 +249,34 @@ Safety Features:
         help='Delete orphaned models from deleted users (default: True)'
     )
     parser.add_argument(
+        '--no-delete-orphaned-models',
+        action='store_false',
+        dest='delete_orphaned_models',
+        help='Skip orphaned model deletion'
+    )
+    parser.add_argument(
         '--delete-orphaned-notes',
         action='store_true',
         default=True,
         help='Delete orphaned notes from deleted users (default: True)'
     )
     parser.add_argument(
+        '--no-delete-orphaned-notes',
+        action='store_false',
+        dest='delete_orphaned_notes',
+        help='Skip orphaned note deletion'
+    )
+    parser.add_argument(
         '--delete-orphaned-folders',
         action='store_true',
         default=True,
         help='Delete orphaned folders from deleted users (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-folders',
+        action='store_false',
+        dest='delete_orphaned_folders',
+        help='Skip orphaned folder deletion'
     )
     parser.add_argument(
         '--delete-orphaned-chat-messages',
