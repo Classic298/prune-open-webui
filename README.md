@@ -417,7 +417,7 @@ python prune/prune.py \
 
 ### Using Flags
 
-Every flag that defaults to **True** can be disabled with the `--no-` prefix. This lets you selectively run only specific cleanup categories:
+Every flag that defaults to **True** can be disabled with the `--no-` prefix. This lets you selectively run only specific cleanup categories. Flags that default to **False** (e.g. `--delete-orphaned-tools`, `--delete-orphaned-functions`, `--delete-orphaned-skills`) do not have a `--no-` variant — they are already off unless you explicitly enable them.
 
 ```bash
 # Disable all default-on orphan cleanup except chats — process one category at a time
