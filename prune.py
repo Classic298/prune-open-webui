@@ -122,14 +122,20 @@ User Deletion:
   --exempt-pending-users            Never delete pending users
 
 Orphaned Data:
-  --delete-orphaned-chats           Delete orphaned chats
-  --delete-orphaned-tools           Delete orphaned tools
-  --delete-orphaned-functions       Delete orphaned functions
-  --delete-orphaned-prompts         Delete orphaned prompts
-  --delete-orphaned-knowledge-bases Delete orphaned knowledge bases
-  --delete-orphaned-models          Delete orphaned models
-  --delete-orphaned-notes           Delete orphaned notes
-  --delete-orphaned-folders         Delete orphaned folders
+  --delete-orphaned-chats           Delete orphaned chats (default: on)
+  --no-delete-orphaned-chats        Skip orphaned chat deletion
+  --delete-orphaned-tools           Delete orphaned tools (default: off)
+  --delete-orphaned-functions       Delete orphaned functions (default: off)
+  --delete-orphaned-prompts         Delete orphaned prompts (default: on)
+  --no-delete-orphaned-prompts      Skip orphaned prompt deletion
+  --delete-orphaned-knowledge-bases Delete orphaned knowledge bases (default: on)
+  --no-delete-orphaned-knowledge-bases  Skip orphaned knowledge base deletion
+  --delete-orphaned-models          Delete orphaned models (default: on)
+  --no-delete-orphaned-models       Skip orphaned model deletion
+  --delete-orphaned-notes           Delete orphaned notes (default: on)
+  --no-delete-orphaned-notes        Skip orphaned note deletion
+  --delete-orphaned-folders         Delete orphaned folders (default: on)
+  --no-delete-orphaned-folders      Skip orphaned folder deletion
 
 Other:
   --audio-cache-max-age-days N Delete audio cache older than N days

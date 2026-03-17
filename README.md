@@ -389,37 +389,48 @@ python prune/prune.py \
 
 ## Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `--days N` | int | None | Delete chats older than N days |
-| `--exempt-archived-chats` | flag | False | Keep archived chats |
-| `--exempt-chats-in-folders` | flag | False | Keep chats in folders/pinned |
-| `--delete-inactive-users-days N` | int | None | Delete users inactive N+ days |
-| `--exempt-admin-users` | flag | True | Never delete admins (RECOMMENDED) |
-| `--exempt-pending-users` | flag | True | Never delete pending users |
-| `--delete-orphaned-chats` | flag | True | Clean orphaned chats |
-| `--delete-orphaned-tools` | flag | False | Clean orphaned tools |
-| `--delete-orphaned-functions` | flag | False | Clean orphaned functions |
-| `--delete-orphaned-skills` | flag | False | Clean orphaned skills |
-| `--delete-orphaned-prompts` | flag | True | Clean orphaned prompts |
-| `--delete-orphaned-knowledge-bases` | flag | True | Clean orphaned KBs |
-| `--delete-orphaned-models` | flag | True | Clean orphaned models |
-| `--delete-orphaned-notes` | flag | True | Clean orphaned notes |
-| `--delete-orphaned-folders` | flag | True | Clean orphaned folders |
-| `--delete-orphaned-chat-messages` | flag | True | Clean orphaned chat_message rows |
-| `--audio-cache-max-age-days N` | int | 30 | Clean audio files older than N days |
-| `--run-vacuum` | flag | False | Run database optimization (locks DB!) |
-| `--dry-run` | flag | True | Preview only (default) |
-| `--execute` | flag | - | Actually perform deletions |
-| `--verbose, -v` | flag | - | Enable debug logging |
-| `--quiet, -q` | flag | - | Suppress non-error output |
-| `--export-preview PATH` | str | None | Export detailed preview to CSV (requires `--dry-run`) |
+| Option | Type | Default | Negate with | Description |
+|--------|------|---------|-------------|-------------|
+| `--days N` | int | None | — | Delete chats older than N days |
+| `--exempt-archived-chats` | flag | False | — | Keep archived chats |
+| `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders/pinned |
+| `--delete-inactive-users-days N` | int | None | — | Delete users inactive N+ days |
+| `--exempt-admin-users` | flag | True | `--no-exempt-admin-users` | Never delete admins (RECOMMENDED) |
+| `--exempt-pending-users` | flag | True | `--no-exempt-pending-users` | Never delete pending users |
+| `--delete-orphaned-chats` | flag | True | `--no-delete-orphaned-chats` | Clean orphaned chats |
+| `--delete-orphaned-tools` | flag | False | — | Clean orphaned tools |
+| `--delete-orphaned-functions` | flag | False | — | Clean orphaned functions |
+| `--delete-orphaned-skills` | flag | False | — | Clean orphaned skills |
+| `--delete-orphaned-prompts` | flag | True | `--no-delete-orphaned-prompts` | Clean orphaned prompts |
+| `--delete-orphaned-knowledge-bases` | flag | True | `--no-delete-orphaned-knowledge-bases` | Clean orphaned KBs |
+| `--delete-orphaned-models` | flag | True | `--no-delete-orphaned-models` | Clean orphaned models |
+| `--delete-orphaned-notes` | flag | True | `--no-delete-orphaned-notes` | Clean orphaned notes |
+| `--delete-orphaned-folders` | flag | True | `--no-delete-orphaned-folders` | Clean orphaned folders |
+| `--delete-orphaned-chat-messages` | flag | True | `--no-delete-orphaned-chat-messages` | Clean orphaned chat_message rows |
+| `--audio-cache-max-age-days N` | int | 30 | — | Clean audio files older than N days |
+| `--run-vacuum` | flag | False | — | Run database optimization (locks DB!) |
+| `--dry-run` | flag | True | — | Preview only (default) |
+| `--execute` | flag | — | — | Actually perform deletions |
+| `--verbose, -v` | flag | — | — | Enable debug logging |
+| `--quiet, -q` | flag | — | — | Suppress non-error output |
+| `--export-preview PATH` | str | None | — | Export detailed preview to CSV (requires `--dry-run`) |
 
 ### Using Flags
 
-To **disable** a default-true flag, use `--no-` prefix:
+Every flag that defaults to **True** can be disabled with the `--no-` prefix. This lets you selectively run only specific cleanup categories:
+
 ```bash
-# Delete archived chats too
+# Disable all default-on orphan cleanup except chats — process one category at a time
+python prune/prune.py \
+  --no-delete-orphaned-prompts \
+  --no-delete-orphaned-knowledge-bases \
+  --no-delete-orphaned-models \
+  --no-delete-orphaned-notes \
+  --no-delete-orphaned-folders \
+  --no-delete-orphaned-chat-messages \
+  --execute
+
+# Delete archived chats too (overrides default exemption)
 python prune/prune.py --days 60 --no-exempt-archived-chats --execute
 
 # Include admins in inactive user deletion (NOT RECOMMENDED!)
