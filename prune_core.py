@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 
 # Optional database-specific imports
 try:
-    from sqlalchemy import text
+    from sqlalchemy import text, bindparam
 except ImportError:
     text = None
 
@@ -848,17 +848,49 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
             # CRITICAL: Clean up orphaned chunks within active KB collections
             # KB collections may contain chunks referencing deleted files
             # This handles the case where a file is deleted but the KB collection remains active
+            # NOTE: We use the active_file_ids set instead of querying the `file` table directly,
+            # because in split-DB deployments the `file` table lives in a separate database
+            # and cannot be referenced from the vector database.
             orphaned_chunks_deleted = 0
             try:
-                if self.session:
+                if self.session and active_file_ids:
                     log.debug("Cleaning orphaned chunks from active KB collections")
+                    # First, find all distinct file_ids referenced by chunks
+                    file_id_result = self.session.execute(text("""
+                        SELECT DISTINCT dc.vmetadata->>'file_id' AS file_id
+                        FROM document_chunk dc
+                        WHERE dc.vmetadata ? 'file_id'
+                          AND dc.vmetadata->>'file_id' IS NOT NULL
+                    """))
+                    referenced_file_ids = {row[0] for row in file_id_result}
+
+                    # Determine which referenced file_ids are orphaned (not in active set)
+                    orphaned_file_ids = referenced_file_ids - active_file_ids
+                    if orphaned_file_ids:
+                        # Delete chunks referencing orphaned file_ids in batches
+                        orphaned_list = list(orphaned_file_ids)
+                        batch_size = 500
+                        for i in range(0, len(orphaned_list), batch_size):
+                            batch = orphaned_list[i:i + batch_size]
+                            result = self.session.execute(
+                                text("""
+                                    DELETE FROM document_chunk dc
+                                    WHERE dc.vmetadata ? 'file_id'
+                                      AND dc.vmetadata->>'file_id' IN :file_ids
+                                """).bindparams(bindparam('file_ids', expanding=True)),
+                                {'file_ids': batch}
+                            )
+                            orphaned_chunks_deleted += result.rowcount
+                        self.session.commit()
+                    if orphaned_chunks_deleted > 0:
+                        log.info(f"Deleted {orphaned_chunks_deleted} orphaned chunks from active collections")
+                elif self.session:
+                    log.debug("Cleaning orphaned chunks from active KB collections (no active files)")
+                    # If there are no active file IDs, all chunks with file_id metadata are orphaned
                     result = self.session.execute(text("""
                         DELETE FROM document_chunk dc
                         WHERE dc.vmetadata ? 'file_id'
-                          AND NOT EXISTS (
-                            SELECT 1 FROM file f
-                            WHERE f.id = (dc.vmetadata->>'file_id')
-                          )
+                          AND dc.vmetadata->>'file_id' IS NOT NULL
                     """))
                     orphaned_chunks_deleted = result.rowcount
                     self.session.commit()
