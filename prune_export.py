@@ -28,6 +28,7 @@ try:
         Users, Chat, Chats, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
+        Automation, AutomationRun,
         Folder, Folders, ChatMessage,
         get_db, get_db_context, CACHE_DIR,
     )
@@ -124,6 +125,8 @@ class PreviewExporter:
                 self._iter_orphaned_uploads(),
                 self._iter_orphaned_vectors(),
                 self._iter_orphaned_chat_messages(),
+                self._iter_orphaned_automations(),
+                self._iter_orphaned_automation_runs(),
                 self._iter_audio_cache(),
             ]
 
@@ -451,6 +454,84 @@ class PreviewExporter:
                         )
         except Exception as e:
             log.debug(f"Error iterating orphaned chat messages (table may not exist): {e}")
+
+    def _iter_orphaned_automations(self) -> Generator[ExportRow, None, None]:
+        """Yield ExportRow for each orphaned automation (owner no longer exists)."""
+        if not self.form_data.delete_orphaned_automations or Automation is None:
+            return
+
+        if not self.active_user_ids:
+            return
+
+        try:
+            with get_db() as db:
+                stmt = select(
+                    Automation.id,
+                    Automation.name,
+                    Automation.user_id,
+                ).filter(
+                    not_(Automation.user_id.in_(self.active_user_ids))
+                )
+
+                try:
+                    result = db.execute(stmt.execution_options(stream_results=True))
+                except AttributeError:
+                    result = db.execution_options(stream_results=True).execute(stmt)
+
+                while True:
+                    rows = result.fetchmany(1000)
+                    if not rows:
+                        break
+
+                    for automation_id, name, user_id in rows:
+                        yield ExportRow(
+                            category="orphaned_automation",
+                            id=automation_id or "",
+                            name=(name or "")[:100],
+                            owner_id=user_id or "",
+                            size_bytes="",
+                            reason="owner not in active users",
+                        )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned automations (table may not exist): {e}")
+
+    def _iter_orphaned_automation_runs(self) -> Generator[ExportRow, None, None]:
+        """Yield ExportRow for each orphaned automation run (parent automation no longer exists)."""
+        if not self.form_data.delete_orphaned_automations or AutomationRun is None or Automation is None:
+            return
+
+        try:
+            with get_db() as db:
+                stmt = select(
+                    AutomationRun.id,
+                    AutomationRun.automation_id,
+                ).filter(
+                    not_(AutomationRun.automation_id.in_(
+                        select(Automation.id)
+                    ))
+                )
+
+                try:
+                    result = db.execute(stmt.execution_options(stream_results=True))
+                except AttributeError:
+                    result = db.execution_options(stream_results=True).execute(stmt)
+
+                while True:
+                    rows = result.fetchmany(1000)
+                    if not rows:
+                        break
+
+                    for run_id, automation_id in rows:
+                        yield ExportRow(
+                            category="orphaned_automation_run",
+                            id=run_id or "",
+                            name=f"automation: {automation_id}" if automation_id else "",
+                            owner_id="",
+                            size_bytes="",
+                            reason="parent automation no longer exists",
+                        )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned automation runs (table may not exist): {e}")
 
     def _iter_audio_cache(self) -> Generator[ExportRow, None, None]:
         """Yield ExportRow for each old audio cache file."""

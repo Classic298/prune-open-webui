@@ -26,7 +26,7 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 The Prune Tool provides a safe and powerful way to clean up your Open WebUI instance by:
 - Deleting old chats and conversations
 - Removing inactive user accounts
-- Cleaning orphaned data (files, tools, skills, prompts, etc.)
+- Cleaning orphaned data (files, tools, skills, automations, prompts, etc.)
 - Removing old audio cache files
 - Optimizing database performance
 
@@ -407,6 +407,7 @@ python prune/prune.py \
 | `--delete-orphaned-notes` | flag | True | `--no-delete-orphaned-notes` | Clean orphaned notes |
 | `--delete-orphaned-folders` | flag | True | `--no-delete-orphaned-folders` | Clean orphaned folders |
 | `--delete-orphaned-chat-messages` | flag | True | `--no-delete-orphaned-chat-messages` | Clean orphaned chat_message rows |
+| `--delete-orphaned-automations` | flag | True | `--no-delete-orphaned-automations` | Clean orphaned automations and automation runs |
 | `--audio-cache-max-age-days N` | int | 30 | — | Clean audio files older than N days |
 | `--run-vacuum` | flag | False | — | Run database optimization (locks DB!) |
 | `--dry-run` | flag | True | — | Preview only (default) |
@@ -428,6 +429,7 @@ python prune/prune.py \
   --no-delete-orphaned-notes \
   --no-delete-orphaned-folders \
   --no-delete-orphaned-chat-messages \
+  --no-delete-orphaned-automations \
   --execute
 
 # Delete archived chats too (overrides default exemption)
@@ -551,6 +553,7 @@ When you delete a user, **ALL their data is deleted**:
 - Files and uploads
 - Custom tools, functions, and skills
 - Knowledge bases and embeddings
+- Automations and automation run history
 - Prompts, models, notes, folders
 - Everything they created
 
@@ -655,7 +658,8 @@ If operations are very slow:
 - Audio cache files (based on file `mtime`)
 
 **Orphaned Data:**
-- Chats/tools/skills/prompts/etc. from deleted users
+- Chats/tools/skills/automations/prompts/etc. from deleted users
+- Automation runs from deleted automations
 - Chat messages (analytics metadata) from deleted chats — see note below
 - Files not referenced in chats/KBs
 - Vector collections for deleted files/KBs

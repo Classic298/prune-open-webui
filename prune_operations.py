@@ -55,6 +55,7 @@ try:
         Users, Chat, Chats, ChatFile, ChatMessage, Message, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
+        Automation, AutomationRun, Automations, AutomationRuns,
         Folder, Folders, FolderModel, Storage,
         get_db, get_db_context, CACHE_DIR
     )
@@ -185,6 +186,8 @@ def count_orphaned_records(
         "skills": 0,
         "folders": 0,
         "chat_messages": 0,
+        "automations": 0,
+        "automation_runs": 0,
     }
 
     try:
@@ -228,6 +231,28 @@ def count_orphaned_records(
                     ).scalar() or 0
                 except Exception as e:
                     log.debug(f"Error counting orphaned chat_messages (table may not exist yet): {e}")
+
+            # Count orphaned automations and automation_runs
+            if form_data.delete_orphaned_automations and Automation is not None:
+                try:
+                    # Automations owned by non-existent users
+                    if active_user_ids:
+                        counts["automations"] = db.query(
+                            func.count()
+                        ).select_from(Automation).filter(
+                            not_(Automation.user_id.in_(active_user_ids))
+                        ).scalar() or 0
+
+                    # Automation runs referencing non-existent automations
+                    counts["automation_runs"] = db.query(
+                        func.count(AutomationRun.id)
+                    ).filter(
+                        not_(AutomationRun.automation_id.in_(
+                            select(Automation.id)
+                        ))
+                    ).scalar() or 0
+                except Exception as e:
+                    log.debug(f"Error counting orphaned automations (table may not exist yet): {e}")
 
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")
@@ -779,6 +804,9 @@ def delete_inactive_users(
                         files_deleted = delete_user_files(user.id, vector_cleaner, db=db)
                         total_files_deleted += files_deleted
 
+                    # Delete user's automations and their runs
+                    delete_user_automations(user.id, db=db)
+
                     # Delete the user - CASCADE handles remaining associations
                     Users.delete_user_by_id(user.id, db=db)
                     deleted_count += 1
@@ -795,6 +823,165 @@ def delete_inactive_users(
         log.info(f"Total files deleted from inactive users: {total_files_deleted}")
 
     return deleted_count
+
+
+def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
+    """
+    Delete all automations and their runs for a given user.
+
+    Called during user deletion to ensure automation data is cleaned up
+    before the user row is removed.
+
+    Args:
+        user_id: The user ID whose automations should be deleted
+        db: Optional database session to reuse
+
+    Returns:
+        Number of automations deleted
+    """
+    if Automation is None:
+        return 0
+
+    deleted_count = 0
+    try:
+        with get_db_context(db) as session:
+            # Find all automation IDs for this user
+            automation_ids = [
+                row.id for row in
+                session.query(Automation.id).filter_by(user_id=user_id).all()
+            ]
+
+            if not automation_ids:
+                return 0
+
+            # Delete runs for these automations first
+            runs_deleted = session.query(AutomationRun).filter(
+                AutomationRun.automation_id.in_(automation_ids)
+            ).delete(synchronize_session=False)
+
+            # Delete the automations themselves
+            deleted_count = session.query(Automation).filter_by(
+                user_id=user_id
+            ).delete(synchronize_session=False)
+
+            session.commit()
+
+            if deleted_count > 0:
+                log.info(
+                    f"Deleted {deleted_count} automations and "
+                    f"{runs_deleted} automation runs for user {user_id}"
+                )
+
+    except Exception as e:
+        log.debug(f"Error deleting automations for user {user_id}: {e}")
+
+    return deleted_count
+
+
+def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
+    """
+    Delete automation rows whose owner user no longer exists.
+
+    Also deletes associated automation_run rows to avoid leaving
+    doubly-orphaned records.
+
+    Args:
+        active_user_ids: Set of user IDs that still exist
+
+    Returns:
+        Number of automations deleted
+    """
+    if Automation is None or not active_user_ids:
+        return 0
+
+    try:
+        with get_db_context() as db:
+            # Find orphaned automation IDs
+            orphaned_ids = [
+                row.id for row in
+                db.query(Automation.id).filter(
+                    not_(Automation.user_id.in_(active_user_ids))
+                ).all()
+            ]
+
+            if not orphaned_ids:
+                return 0
+
+            # Delete runs for these automations first
+            batch_size = 500
+            runs_deleted = 0
+            for i in range(0, len(orphaned_ids), batch_size):
+                batch = orphaned_ids[i:i + batch_size]
+                runs_deleted += db.query(AutomationRun).filter(
+                    AutomationRun.automation_id.in_(batch)
+                ).delete(synchronize_session=False)
+
+            # Delete the automations themselves
+            deleted = 0
+            for i in range(0, len(orphaned_ids), batch_size):
+                batch = orphaned_ids[i:i + batch_size]
+                deleted += db.query(Automation).filter(
+                    Automation.id.in_(batch)
+                ).delete(synchronize_session=False)
+
+            db.commit()
+
+            if deleted > 0:
+                log.info(
+                    f"Deleted {deleted} orphaned automations and "
+                    f"{runs_deleted} associated automation runs"
+                )
+            return deleted
+
+    except Exception as e:
+        log.error(f"Error deleting orphaned automations: {e}")
+        return 0
+
+
+def delete_orphaned_automation_runs() -> int:
+    """
+    Delete automation_run rows whose parent automation no longer exists.
+
+    These can be left behind if an automation was deleted without cleaning
+    up its runs, or on SQLite where FK CASCADE is not enforced.
+
+    Returns:
+        Number of automation_run rows deleted
+    """
+    if AutomationRun is None or Automation is None:
+        return 0
+
+    try:
+        with get_db_context() as db:
+            orphaned_ids = [
+                row.id for row in
+                db.query(AutomationRun.id).filter(
+                    not_(AutomationRun.automation_id.in_(
+                        select(Automation.id)
+                    ))
+                ).all()
+            ]
+
+            if not orphaned_ids:
+                return 0
+
+            # Delete in batches to avoid SQLite variable limits
+            deleted = 0
+            batch_size = 500
+            for i in range(0, len(orphaned_ids), batch_size):
+                batch = orphaned_ids[i:i + batch_size]
+                deleted += db.query(AutomationRun).filter(
+                    AutomationRun.id.in_(batch)
+                ).delete(synchronize_session=False)
+            db.commit()
+
+            if deleted > 0:
+                log.info(f"Deleted {deleted} orphaned automation_run rows")
+            return deleted
+
+    except Exception as e:
+        log.error(f"Error deleting orphaned automation_runs: {e}")
+        return 0
 
 
 def cleanup_audio_cache(max_age_days: Optional[int] = 30) -> int:

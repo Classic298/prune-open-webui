@@ -51,6 +51,8 @@ try:
         delete_inactive_users,
         cleanup_audio_cache,
         delete_orphaned_chat_messages,
+        delete_orphaned_automations,
+        delete_orphaned_automation_runs,
     )
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
@@ -326,6 +328,7 @@ class InteractivePruneUI:
             ("Models", "delete_orphaned_models", "Custom model configs"),
             ("Notes", "delete_orphaned_notes", "User notes"),
             ("Skills", "delete_orphaned_skills", "Custom skills"),
+            ("Automations", "delete_orphaned_automations", "Scheduled automations and their run history"),
             ("Chat Messages", "delete_orphaned_chat_messages", "Analytics data from deleted chats"),
         ]
 
@@ -425,6 +428,7 @@ class InteractivePruneUI:
             ("Models", self.form_data.delete_orphaned_models),
             ("Notes", self.form_data.delete_orphaned_notes),
             ("Skills", self.form_data.delete_orphaned_skills),
+            ("Automations", self.form_data.delete_orphaned_automations),
             ("Folders", self.form_data.delete_orphaned_folders),
             ("Chat Messages", self.form_data.delete_orphaned_chat_messages),
         ]
@@ -509,6 +513,8 @@ class InteractivePruneUI:
                         self.form_data.audio_cache_max_age_days
                     ),
                     orphaned_chat_messages=orphaned_counts["chat_messages"],
+                    orphaned_automations=orphaned_counts["automations"],
+                    orphaned_automation_runs=orphaned_counts["automation_runs"],
                 )
 
                 progress.update(task, completed=True)
@@ -845,6 +851,14 @@ class InteractivePruneUI:
                 deleted = delete_orphaned_chat_messages()
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chat messages")
+
+            # Orphaned automations and automation runs
+            if self.form_data.delete_orphaned_automations:
+                task = progress.add_task("Deleting orphaned automations...", total=None)
+                deleted_automations = delete_orphaned_automations(active_user_ids)
+                deleted_runs = delete_orphaned_automation_runs()
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted_automations} orphaned automations, {deleted_runs} orphaned automation runs")
 
             # Stage 4: Cleanup physical files
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
