@@ -58,9 +58,15 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
     guarantees bounded memory regardless of DB driver or transaction
     configuration.  Each batch executes a fresh LIMIT query.
 
+    The first column is used as the keyset cursor and must be non-nullable
+    (NULLs are excluded automatically).  If the first column can be NULL
+    on a full batch boundary, the cursor would stay None and re-fetch the
+    same page indefinitely.
+
     Args:
         db: SQLAlchemy session
-        *columns: One or more ORM column descriptors to SELECT
+        *columns: One or more ORM column descriptors to SELECT.
+                  The first column is used for ordering/keysetting.
         filter_clause: Optional SQLAlchemy filter expression
         batch_size: Number of rows per batch (default 5000)
 
@@ -68,7 +74,7 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
         Row tuples from the query
     """
     order_col = columns[0]
-    base_stmt = select(*columns)
+    base_stmt = select(*columns).where(order_col.isnot(None))
     if filter_clause is not None:
         base_stmt = base_stmt.where(filter_clause)
     base_stmt = base_stmt.order_by(order_col)
@@ -478,8 +484,13 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                         if kb_id in active_kb_ids and file_id in all_file_ids:
                             active_file_ids.add(file_id)
                 log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
-        except Exception as e:
-            log.debug(f"knowledge_file table query failed (table may not exist yet): {e}")
+        except OperationalError as e:
+            # Table may not exist on pre-v0.6.41 schemas — safe to skip
+            error_msg = str(e).lower()
+            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}")
+            else:
+                raise  # Transient DB errors must abort, not produce incomplete sets
 
         # Scan chat_file junction table (cheap — just UUIDs, no JSONB).
         # Since v0.6.41+ chat files are stored in a dedicated junction table.
@@ -491,9 +502,13 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                     if file_id and file_id in all_file_ids:
                         active_file_ids.add(file_id)
             log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
-        except Exception as e:
-            # chat_file table might not exist in older database versions
-            log.debug(f"Error scanning chat_file table (table may not exist yet): {e}")
+        except OperationalError as e:
+            # Table may not exist on pre-v0.6.41 schemas — safe to skip
+            error_msg = str(e).lower()
+            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"chat_file table does not exist (pre-v0.6.41 schema): {e}")
+            else:
+                raise  # Transient DB errors must abort, not produce incomplete sets
 
         # Always scan legacy chat.chat JSON as well — during upgrades from
         # pre-v0.6.41 databases, some file references may exist only in the
