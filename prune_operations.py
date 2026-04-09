@@ -112,16 +112,15 @@ def get_kb_user_map() -> dict:
     This replaces Knowledges.get_knowledge_bases() which can OOM on large
     databases because SQLAlchemy eager-loads File objects through the
     knowledge_file relationship, pulling hundreds of MB of JSONB into memory.
+
+    Raises on failure — callers (prune execution) must not proceed with an
+    empty preservation set, as that could cause over-deletion.
     """
-    try:
-        with get_db() as db:
-            rows = db.execute(
-                select(Knowledge.id, Knowledge.user_id)
-            ).fetchall()
-            return {kb_id: uid for kb_id, uid in rows}
-    except Exception as e:
-        log.error(f"Error querying knowledge table: {e}")
-        return {}
+    with get_db() as db:
+        rows = db.execute(
+            select(Knowledge.id, Knowledge.user_id)
+        ).fetchall()
+        return {kb_id: uid for kb_id, uid in rows}
 
 
 # API Compatibility Helpers
@@ -482,12 +481,11 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
         except Exception as e:
             log.debug(f"knowledge_file table query failed (table may not exist yet): {e}")
 
-        # Scan chat_file junction table first (cheap — just UUIDs, no JSONB).
-        # Since v0.6.41+ chat files are stored here; if the table is populated
-        # we can skip the very expensive full-JSON chat scan below.
-        chat_file_count = 0
+        # Scan chat_file junction table (cheap — just UUIDs, no JSONB).
+        # Since v0.6.41+ chat files are stored in a dedicated junction table.
         try:
             with get_db() as db:
+                chat_file_count = 0
                 for (file_id,) in stream_rows(db, ChatFile.file_id):
                     chat_file_count += 1
                     if file_id and file_id in all_file_ids:
@@ -497,28 +495,28 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
             # chat_file table might not exist in older database versions
             log.debug(f"Error scanning chat_file table (table may not exist yet): {e}")
 
-        # Scan chat JSON only when chat_file table is empty or missing (legacy DBs).
+        # Always scan legacy chat.chat JSON as well — during upgrades from
+        # pre-v0.6.41 databases, some file references may exist only in the
+        # JSON column while newer chats use chat_file.  Skipping this when
+        # chat_file is non-empty is unsafe for partially-migrated schemas.
         # Each row's JSONB can be megabytes, so use a small batch size.
-        if chat_file_count == 0:
-            def scan_chats():
-                chat_count = 0
-                with get_db() as db:
-                    for chat_id, chat_dict in stream_rows(
-                        db, Chat.id, Chat.chat, batch_size=50
-                    ):
-                        chat_count += 1
-                        if not chat_dict or not isinstance(chat_dict, dict):
-                            continue
-                        try:
-                            collect_file_ids_from_dict(chat_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing chat {chat_id} for file references: {e}")
-                return chat_count
+        def scan_chats():
+            chat_count = 0
+            with get_db() as db:
+                for chat_id, chat_dict in stream_rows(
+                    db, Chat.id, Chat.chat, batch_size=50
+                ):
+                    chat_count += 1
+                    if not chat_dict or not isinstance(chat_dict, dict):
+                        continue
+                    try:
+                        collect_file_ids_from_dict(chat_dict, active_file_ids, all_file_ids)
+                    except Exception as e:
+                        log.debug(f"Error processing chat {chat_id} for file references: {e}")
+            return chat_count
 
-            chat_count = retry_on_db_lock(scan_chats)
-            log.debug(f"Scanned {chat_count} chats (legacy JSON) for file references")
-        else:
-            log.debug("Skipping legacy chat JSON scan — chat_file table is populated")
+        chat_count = retry_on_db_lock(scan_chats)
+        log.debug(f"Scanned {chat_count} chats (legacy JSON) for file references")
 
         # Scan folders for file references
         try:

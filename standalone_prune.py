@@ -591,13 +591,15 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     conditions &= or_(Chat.archived == False, Chat.archived == None)
                 if form_data.exempt_chats_in_folders and hasattr(Chat, 'folder_id'):
                     conditions &= Chat.folder_id == None
-                    conditions &= or_(Chat.pinned == False, Chat.pinned == None)
+                    if hasattr(Chat, 'pinned'):
+                        conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
-                chat_ids = [r[0] for r in stream_rows(db, Chat.id, filter_clause=conditions)]
-                if chat_ids:
-                    log.info(f"Deleting {len(chat_ids)} old chats (older than {form_data.days} days)")
-                    for chat_id in chat_ids:
-                        Chats.delete_chat_by_id(chat_id, db=db)
+                deleted = 0
+                for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                    Chats.delete_chat_by_id(chat_id, db=db)
+                    deleted += 1
+                if deleted > 0:
+                    log.info(f"Deleting {deleted} old chats (older than {form_data.days} days)")
                 else:
                     log.info(f"No chats found older than {form_data.days} days")
         else:
@@ -619,15 +621,13 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         log.info("Deleting orphaned database records")
 
         deleted_files = 0
-        # Stream id+user_id only to avoid loading full File ORM objects
+        # Stream id+user_id only, iterate directly — keyset pagination uses
+        # fresh queries per batch, so deletions don't disrupt iteration
         with get_db() as db:
-            orphaned_file_ids = [
-                fid for fid, uid in stream_rows(db, File.id, File.user_id)
-                if fid not in active_file_ids or uid not in active_user_ids
-            ]
-            for file_id in orphaned_file_ids:
-                if safe_delete_file_by_id(file_id, vector_cleaner, db=db):
-                    deleted_files += 1
+            for fid, uid in stream_rows(db, File.id, File.user_id):
+                if fid not in active_file_ids or uid not in active_user_ids:
+                    if safe_delete_file_by_id(fid, vector_cleaner, db=db):
+                        deleted_files += 1
 
         if deleted_files > 0:
             log.info(f"Deleted {deleted_files} orphaned files")

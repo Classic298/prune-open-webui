@@ -700,10 +700,10 @@ class InteractivePruneUI:
                         conditions &= or_(Chat.archived == False, Chat.archived == None)
                     if self.form_data.exempt_chats_in_folders and hasattr(Chat, 'folder_id'):
                         conditions &= Chat.folder_id == None
-                        conditions &= or_(Chat.pinned == False, Chat.pinned == None)
+                        if hasattr(Chat, 'pinned'):
+                            conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
-                    chat_ids = [r[0] for r in stream_rows(db, Chat.id, filter_clause=conditions)]
-                    for chat_id in chat_ids:
+                    for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
                         Chats.delete_chat_by_id(chat_id, db=db)
                         deleted += 1
 
@@ -718,17 +718,14 @@ class InteractivePruneUI:
             active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
-            # Delete orphaned files — stream id+user_id only
+            # Delete orphaned files — stream id+user_id only, iterate directly
             task = progress.add_task("Deleting orphaned files...", total=None)
             deleted_files = 0
             with get_db() as db:
-                orphaned_file_ids = [
-                    fid for fid, uid in stream_rows(db, File.id, File.user_id)
-                    if fid not in active_file_ids or uid not in active_user_ids
-                ]
-                for file_id in orphaned_file_ids:
-                    if safe_delete_file_by_id(file_id, self.vector_cleaner, db=db):
-                        deleted_files += 1
+                for fid, uid in stream_rows(db, File.id, File.user_id):
+                    if fid not in active_file_ids or uid not in active_user_ids:
+                        if safe_delete_file_by_id(fid, self.vector_cleaner, db=db):
+                            deleted_files += 1
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_files} orphaned files")
 
