@@ -940,6 +940,7 @@ def delete_inactive_users(
                         f"Deleted inactive user: {user.email} (last active: {user.last_active_at})"
                     )
                 except Exception as e:
+                    db.rollback()
                     log.error(f"Failed to delete user {user.id}: {e}")
 
     except Exception as e:
