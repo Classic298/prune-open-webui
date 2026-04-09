@@ -121,6 +121,14 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.storage.provider import Storage
 
     try:
+        from open_webui.models.automations import Automation, AutomationRun, Automations, AutomationRuns
+    except ImportError:
+        Automation = None
+        AutomationRun = None
+        Automations = None
+        AutomationRuns = None
+
+    try:
         from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
     except ImportError:
         VECTOR_DB_CLIENT = None
@@ -149,6 +157,14 @@ elif _import_strategy == "git":
     from backend.open_webui.internal.db import get_db, get_db_context
     from backend.open_webui.config import CACHE_DIR
     from backend.open_webui.storage.provider import Storage
+
+    try:
+        from backend.open_webui.models.automations import Automation, AutomationRun, Automations, AutomationRuns
+    except ImportError:
+        Automation = None
+        AutomationRun = None
+        Automations = None
+        AutomationRuns = None
 
     try:
         from backend.open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
@@ -186,6 +202,10 @@ __all__ = [
     'Tools',
     'Skill',
     'Skills',
+    'Automation',
+    'AutomationRun',
+    'Automations',
+    'AutomationRuns',
     'Folder',
     'Folders',
     'FolderModel',
