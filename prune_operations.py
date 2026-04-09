@@ -980,13 +980,17 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
                 return 0
 
             # Delete runs for these automations first (batched for SQLite)
-            batch_size = 500
-            runs_deleted = 0
-            for i in range(0, len(automation_ids), batch_size):
-                batch = automation_ids[i:i + batch_size]
-                runs_deleted += session.query(AutomationRun).filter(
-                    AutomationRun.automation_id.in_(batch)
-                ).delete(synchronize_session=False)
+            if AutomationRun is not None:
+                batch_size = 500
+                runs_deleted = 0
+                for i in range(0, len(automation_ids), batch_size):
+                    batch = automation_ids[i:i + batch_size]
+                    runs_deleted += session.query(AutomationRun).filter(
+                        AutomationRun.automation_id.in_(batch)
+                    ).delete(synchronize_session=False)
+            else:
+                log.warning("AutomationRun model not available, skipping run cleanup")
+                runs_deleted = 0
 
             # Delete the automations themselves
             deleted_count = session.query(Automation).filter_by(
@@ -1005,9 +1009,9 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
         if _is_table_missing_error(e):
             log.debug(f"Automation tables do not exist: {e}")
         else:
-            log.debug(f"Error deleting automations for user {user_id}: {e}")
+            log.warning(f"Error deleting automations for user {user_id}: {e}")
     except Exception as e:
-        log.debug(f"Error deleting automations for user {user_id}: {e}")
+        log.warning(f"Error deleting automations for user {user_id}: {e}")
 
     return deleted_count
 
@@ -1043,13 +1047,17 @@ def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
                 return 0
 
             # Delete runs for these automations first (batched for SQLite)
-            batch_size = 500
-            runs_deleted = 0
-            for i in range(0, len(orphaned_ids), batch_size):
-                batch = orphaned_ids[i:i + batch_size]
-                runs_deleted += db.query(AutomationRun).filter(
-                    AutomationRun.automation_id.in_(batch)
-                ).delete(synchronize_session=False)
+            if AutomationRun is not None:
+                batch_size = 500
+                runs_deleted = 0
+                for i in range(0, len(orphaned_ids), batch_size):
+                    batch = orphaned_ids[i:i + batch_size]
+                    runs_deleted += db.query(AutomationRun).filter(
+                        AutomationRun.automation_id.in_(batch)
+                    ).delete(synchronize_session=False)
+            else:
+                log.warning("AutomationRun model not available, skipping run cleanup")
+                runs_deleted = 0
 
             # Delete the automations themselves
             deleted = 0
@@ -1094,17 +1102,18 @@ def delete_orphaned_automation_runs() -> int:
 
     try:
         with get_db_context() as db:
-            orphaned_ids = [
-                str(row.id) for row in
-                db.query(AutomationRun.id).filter(
-                    or_(
-                        AutomationRun.automation_id.is_(None),
-                        not_(AutomationRun.automation_id.in_(
-                            select(Automation.id)
-                        ))
-                    )
-                ).all()
-            ]
+            # Stream orphaned IDs in chunks to avoid bulk materialization
+            orphaned_ids = []
+            for (run_id,) in stream_rows(
+                db, AutomationRun.id,
+                filter_clause=or_(
+                    AutomationRun.automation_id.is_(None),
+                    not_(AutomationRun.automation_id.in_(
+                        select(Automation.id)
+                    ))
+                )
+            ):
+                orphaned_ids.append(str(run_id))
 
             if not orphaned_ids:
                 return 0
