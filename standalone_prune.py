@@ -589,8 +589,9 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 conditions = Chat.updated_at < cutoff_time
                 if form_data.exempt_archived_chats:
                     conditions &= or_(Chat.archived == False, Chat.archived == None)
-                if form_data.exempt_chats_in_folders and hasattr(Chat, 'folder_id'):
-                    conditions &= Chat.folder_id == None
+                if form_data.exempt_chats_in_folders:
+                    if hasattr(Chat, 'folder_id'):
+                        conditions &= Chat.folder_id == None
                     if hasattr(Chat, 'pinned'):
                         conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
@@ -648,14 +649,16 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         deleted_others = 0
 
+        # Chats — stream IDs + user_ids, filter via Python set membership
+        # to avoid SQLite's ~999 parameter limit with NOT IN clauses
         if form_data.delete_orphaned_chats:
             chats_deleted = 0
             with get_db() as db:
-                clause = Chat.user_id.notin_(active_user_ids) if active_user_ids else None
-                for (chat_id,) in stream_rows(db, Chat.id, filter_clause=clause):
-                    Chats.delete_chat_by_id(chat_id, db=db)
-                    chats_deleted += 1
-                    deleted_others += 1
+                for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+                    if chat_uid not in active_user_ids:
+                        Chats.delete_chat_by_id(chat_id, db=db)
+                        chats_deleted += 1
+                        deleted_others += 1
             if chats_deleted > 0:
                 log.info(f"Deleted {chats_deleted} orphaned chats")
         else:
@@ -766,9 +769,15 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Skipping orphaned chat_message deletion (disabled)")
 
         # Stage 4: Clean up orphaned physical files and vector collections.
-        # Reuse the preservation sets built in Stage 2 — nothing between
-        # Stages 2-4 changes file/KB ownership, so rebuilding is wasteful
-        # (and was a second OOM opportunity on large databases).
+        # Recompute preservation sets after Stage 3 deletions — files that
+        # were only referenced by now-deleted chats/KBs should no longer
+        # be considered active.  This is safe with the streaming-based
+        # get_active_file_ids() that replaced the OOM-prone ORM version.
+        log.info("Recomputing preservation sets after deletions")
+        kb_map = get_kb_user_map()
+        active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+        active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+
         log.info("Cleaning up orphaned physical files")
 
         deleted_uploads = cleanup_orphaned_uploads(active_file_ids)

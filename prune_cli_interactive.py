@@ -698,8 +698,9 @@ class InteractivePruneUI:
                     conditions = Chat.updated_at < cutoff_time
                     if self.form_data.exempt_archived_chats:
                         conditions &= or_(Chat.archived == False, Chat.archived == None)
-                    if self.form_data.exempt_chats_in_folders and hasattr(Chat, 'folder_id'):
-                        conditions &= Chat.folder_id == None
+                    if self.form_data.exempt_chats_in_folders:
+                        if hasattr(Chat, 'folder_id'):
+                            conditions &= Chat.folder_id == None
                         if hasattr(Chat, 'pinned'):
                             conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
@@ -743,15 +744,16 @@ class InteractivePruneUI:
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned knowledge bases")
 
-            # Chats — stream IDs only to avoid loading full chat JSON
+            # Chats — stream IDs + user_ids, filter via Python set membership
+            # to avoid SQLite's ~999 parameter limit with NOT IN clauses
             if self.form_data.delete_orphaned_chats:
                 task = progress.add_task("Deleting orphaned chats...", total=None)
                 deleted = 0
                 with get_db() as db:
-                    clause = Chat.user_id.notin_(active_user_ids) if active_user_ids else None
-                    for (chat_id,) in stream_rows(db, Chat.id, filter_clause=clause):
-                        Chats.delete_chat_by_id(chat_id, db=db)
-                        deleted += 1
+                    for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+                        if chat_uid not in active_user_ids:
+                            Chats.delete_chat_by_id(chat_id, db=db)
+                            deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chats")
 
@@ -847,9 +849,16 @@ class InteractivePruneUI:
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chat messages")
 
             # Stage 4: Cleanup physical files and vector collections.
-            # Reuse the preservation sets built in Stage 2 — nothing between
-            # Stages 2-4 changes file/KB ownership, so rebuilding is wasteful
-            # (and was a second OOM opportunity on large databases).
+            # Recompute preservation sets after Stage 3 deletions — files that
+            # were only referenced by now-deleted chats/KBs should no longer
+            # be considered active.  This is safe with the streaming-based
+            # get_active_file_ids() that replaced the OOM-prone ORM version.
+            task = progress.add_task("Recomputing preservation sets...", total=None)
+            kb_map = get_kb_user_map()
+            active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+            progress.update(task, completed=True)
+
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
             deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
             progress.update(task, completed=True)
