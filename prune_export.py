@@ -476,9 +476,10 @@ class PreviewExporter:
         if not self.form_data.delete_orphaned_automations or Automation is None:
             return
 
-        # Initialize caches for the runs iterator
-        self._all_automation_ids = set()
-        self._orphaned_automation_ids = set()
+        # Build into local sets first; only cache on success so the runs
+        # iterator falls back to a fresh scan if this one fails
+        all_ids = set()
+        orphaned_ids = set()
 
         try:
             with get_db() as db:
@@ -502,9 +503,9 @@ class PreviewExporter:
 
                     for automation_id, name, user_id in rows:
                         auto_id_str = str(automation_id) if automation_id else ""
-                        self._all_automation_ids.add(auto_id_str)
+                        all_ids.add(auto_id_str)
                         if str(user_id) not in self.active_user_ids:
-                            self._orphaned_automation_ids.add(auto_id_str)
+                            orphaned_ids.add(auto_id_str)
                             yield ExportRow(
                                 category="orphaned_automation",
                                 id=auto_id_str,
@@ -513,6 +514,10 @@ class PreviewExporter:
                                 size_bytes="",
                                 reason="owner not in active users",
                             )
+
+            # Cache only after successful scan
+            self._all_automation_ids = all_ids
+            self._orphaned_automation_ids = orphaned_ids
         except Exception as e:
             log.debug(f"Error iterating orphaned automations (table may not exist): {e}")
 
