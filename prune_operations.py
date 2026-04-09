@@ -260,29 +260,15 @@ def count_orphaned_records(
             # A file is orphaned when it is not in the active_file_ids set OR
             # its owner is not in active_user_ids.
             #
-            # We cannot pass active_file_ids into a SQL IN() clause directly because
-            # on large databases it can contain 100K+ entries, generating a query
-            # with 100K+ literal strings that OOMs both Python and Postgres.
-            # Instead we count total files minus the ones that are both
-            # referenced AND owned by an active user — using batched IN().
-            total_files = db.query(func.count(File.id)).scalar() or 0
-            if active_file_ids and active_user_ids:
-                active_count = 0
-                file_id_list = list(active_file_ids)
-                # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is ~999.
-                # Each query uses len(batch) + len(active_user_ids) params,
-                # so cap batch size to stay safely under the limit.
-                max_params = 900
-                batch_size = max(1, max_params - len(active_user_ids))
-                for i in range(0, len(file_id_list), batch_size):
-                    batch = file_id_list[i:i + batch_size]
-                    active_count += db.query(func.count(File.id)).filter(
-                        File.id.in_(batch),
-                        File.user_id.in_(active_user_ids),
-                    ).scalar() or 0
-                counts["files"] = max(0, total_files - active_count)
-            else:
-                counts["files"] = total_files
+            # Stream id+user_id and check membership in Python to avoid any
+            # SQL IN() clauses — active_file_ids can be 100K+ entries and
+            # active_user_ids can exceed SQLite's ~999 parameter limit on
+            # large instances.
+            orphaned_file_count = 0
+            for fid, uid in stream_rows(db, File.id, File.user_id):
+                if fid not in active_file_ids or uid not in active_user_ids:
+                    orphaned_file_count += 1
+            counts["files"] = orphaned_file_count
 
             # Count other orphaned records by user ownership
             _table_flag_map = [
