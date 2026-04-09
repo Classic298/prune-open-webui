@@ -212,10 +212,13 @@ def count_old_chats(
                 conditions.append(or_(Chat.archived == False, Chat.archived == None))
 
             if exempt_in_folders:
-                conditions.append(and_(
-                    Chat.folder_id == None,
-                    or_(Chat.pinned == False, Chat.pinned == None)
-                ))
+                folder_conditions = []
+                if hasattr(Chat, 'folder_id'):
+                    folder_conditions.append(Chat.folder_id == None)
+                if hasattr(Chat, 'pinned'):
+                    folder_conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
+                if folder_conditions:
+                    conditions.append(and_(*folder_conditions))
 
             count = db.query(func.count(Chat.id)).filter(*conditions).scalar()
             return count or 0
@@ -304,8 +307,12 @@ def count_orphaned_records(
                             select(Chat.id)
                         ))
                     ).scalar() or 0
-                except Exception as e:
-                    log.debug(f"Error counting orphaned chat_messages (table may not exist yet): {e}")
+                except OperationalError as e:
+                    error_msg = str(e).lower()
+                    if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                        log.debug(f"chat_message table does not exist: {e}")
+                    else:
+                        raise
 
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")
@@ -549,8 +556,12 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing folder {folder_id} data: {e}")
-        except Exception as e:
-            log.debug(f"Error scanning folders for file references: {e}")
+        except OperationalError as e:
+            error_msg = str(e).lower()
+            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Folder table does not exist: {e}")
+            else:
+                raise
 
         # Scan standalone messages for file references
         try:
@@ -564,8 +575,12 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing message {message_id} data: {e}")
-        except Exception as e:
-            log.debug(f"Error scanning messages for file references: {e}")
+        except OperationalError as e:
+            error_msg = str(e).lower()
+            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Message table does not exist: {e}")
+            else:
+                raise
 
         # Scan models for file references in params and meta fields
         try:
@@ -586,12 +601,17 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                         except Exception as e:
                             log.debug(f"Error processing model {model_id} meta: {e}")
                 log.debug(f"Scanned {model_count} models for file references")
-        except Exception as e:
-            log.debug(f"Error scanning models for file references: {e}")
+        except OperationalError as e:
+            error_msg = str(e).lower()
+            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Model table does not exist: {e}")
+            else:
+                raise
 
-    except Exception as e:
-        log.error(f"Error determining active file IDs: {e}")
-        return set()
+    except Exception:
+        # Do NOT return an empty set — callers use this for deletion decisions.
+        # An empty preservation set would mark ALL files as orphaned.
+        raise
 
     log.info(f"Found {len(active_file_ids)} active file IDs")
     return active_file_ids
