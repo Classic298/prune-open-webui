@@ -23,8 +23,6 @@ _TABLE_MISSING_ERRORS = (OperationalError, ProgrammingError)
 
 def _is_table_missing_error(exc: Exception) -> bool:
     """Return True if the exception indicates a missing table/column."""
-    if isinstance(exc, AttributeError):
-        return True  # ORM attribute missing on this backend version
     msg = str(exc).lower()
     return any(s in msg for s in ('no such table', 'does not exist', 'undefined table'))
 
@@ -488,10 +486,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # Query the knowledge_file junction table directly for file IDs.
         # This replaces the N+1 pattern of Knowledges.get_files_by_id() per KB,
         # and avoids loading full File ORM objects (large JSONB data/meta columns).
-        try:
+        def scan_knowledge_files():
             with get_db() as db:
-                # knowledge_file is a junction table without a dedicated ORM model,
-                # so use raw SQL with batched fetching to stay memory-safe
                 result = db.execute(text("SELECT knowledge_id, file_id FROM knowledge_file"))
                 kf_count = 0
                 while True:
@@ -507,6 +503,9 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         if kb_id_str in active_kb_ids and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
+
+        try:
+            retry_on_db_lock(scan_knowledge_files)
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
                 log.debug(f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}")
@@ -517,7 +516,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # Since v0.6.41+ chat files are stored in a dedicated junction table.
         # Use fetchmany (not stream_rows) because chat_file.file_id is
         # non-unique — keyset pagination requires a unique cursor column.
-        try:
+        def scan_chat_files():
             with get_db() as db:
                 result = db.execute(text("SELECT file_id FROM chat_file"))
                 chat_file_count = 0
@@ -533,6 +532,9 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         if file_id_str and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
+
+        try:
+            retry_on_db_lock(scan_chat_files)
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
                 log.debug(f"chat_file table does not exist (pre-v0.6.41 schema): {e}")
@@ -563,69 +565,112 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         log.debug(f"Scanned {chat_count} chats (legacy JSON) for file references")
 
         # Scan folders for file references
-        try:
-            with get_db() as db:
-                for folder_id, items_dict, data_dict in stream_rows(
-                    db, Folder.id, Folder.items, Folder.data, batch_size=100
-                ):
-                    if items_dict:
-                        try:
-                            collect_file_ids_from_dict(items_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing folder {folder_id} items: {e}")
-                    if data_dict:
-                        try:
-                            collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing folder {folder_id} data: {e}")
-        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
-            if _is_table_missing_error(e):
-                log.debug(f"Folder scan skipped (schema incompatibility): {e}")
-            else:
-                raise
+        # Pre-check ORM attributes — Folder.items/data may not exist on older schemas
+        has_folder_items = hasattr(Folder, 'items')
+        has_folder_data = hasattr(Folder, 'data')
+        if has_folder_items or has_folder_data:
+            def scan_folders():
+                with get_db() as db:
+                    columns = [Folder.id]
+                    if has_folder_items:
+                        columns.append(Folder.items)
+                    if has_folder_data:
+                        columns.append(Folder.data)
+                    for row in stream_rows(db, *columns, batch_size=100):
+                        folder_id = row[0]
+                        col_idx = 1
+                        if has_folder_items:
+                            items_dict = row[col_idx]
+                            col_idx += 1
+                            if items_dict:
+                                try:
+                                    collect_file_ids_from_dict(items_dict, active_file_ids, all_file_ids)
+                                except Exception as e:
+                                    log.debug(f"Error processing folder {folder_id} items: {e}")
+                        if has_folder_data:
+                            data_dict = row[col_idx]
+                            if data_dict:
+                                try:
+                                    collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
+                                except Exception as e:
+                                    log.debug(f"Error processing folder {folder_id} data: {e}")
+
+            try:
+                retry_on_db_lock(scan_folders)
+            except _TABLE_MISSING_ERRORS as e:
+                if _is_table_missing_error(e):
+                    log.debug(f"Folder scan skipped (table missing): {e}")
+                else:
+                    raise
+        else:
+            log.debug("Folder.items/data attributes not present — skipping folder scan")
 
         # Scan standalone messages for file references
-        try:
-            with get_db() as db:
-                for message_id, message_data_dict in stream_rows(
-                    db, Message.id, Message.data,
-                    filter_clause=Message.data.isnot(None), batch_size=100
-                ):
-                    if message_data_dict:
-                        try:
-                            collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing message {message_id} data: {e}")
-        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
-            if _is_table_missing_error(e):
-                log.debug(f"Message scan skipped (schema incompatibility): {e}")
-            else:
-                raise
+        if hasattr(Message, 'data'):
+            def scan_messages():
+                with get_db() as db:
+                    for message_id, message_data_dict in stream_rows(
+                        db, Message.id, Message.data,
+                        filter_clause=Message.data.isnot(None), batch_size=100
+                    ):
+                        if message_data_dict:
+                            try:
+                                collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
+                            except Exception as e:
+                                log.debug(f"Error processing message {message_id} data: {e}")
+
+            try:
+                retry_on_db_lock(scan_messages)
+            except _TABLE_MISSING_ERRORS as e:
+                if _is_table_missing_error(e):
+                    log.debug(f"Message scan skipped (table missing): {e}")
+                else:
+                    raise
+        else:
+            log.debug("Message.data attribute not present — skipping message scan")
 
         # Scan models for file references in params and meta fields
-        try:
-            with get_db() as db:
-                model_count = 0
-                for model_id, params_dict, meta_dict in stream_rows(
-                    db, Model.id, Model.params, Model.meta, batch_size=100
-                ):
-                    model_count += 1
-                    if params_dict and isinstance(params_dict, dict):
-                        try:
-                            collect_file_ids_from_dict(params_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing model {model_id} params: {e}")
-                    if meta_dict and isinstance(meta_dict, dict):
-                        try:
-                            collect_file_ids_from_dict(meta_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing model {model_id} meta: {e}")
-                log.debug(f"Scanned {model_count} models for file references")
-        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
-            if _is_table_missing_error(e):
-                log.debug(f"Model scan skipped (schema incompatibility): {e}")
-            else:
-                raise
+        has_model_params = hasattr(Model, 'params')
+        has_model_meta = hasattr(Model, 'meta')
+        if has_model_params or has_model_meta:
+            def scan_models():
+                with get_db() as db:
+                    columns = [Model.id]
+                    if has_model_params:
+                        columns.append(Model.params)
+                    if has_model_meta:
+                        columns.append(Model.meta)
+                    model_count = 0
+                    for row in stream_rows(db, *columns, batch_size=100):
+                        model_count += 1
+                        model_id = row[0]
+                        col_idx = 1
+                        if has_model_params:
+                            params_dict = row[col_idx]
+                            col_idx += 1
+                            if params_dict and isinstance(params_dict, dict):
+                                try:
+                                    collect_file_ids_from_dict(params_dict, active_file_ids, all_file_ids)
+                                except Exception as e:
+                                    log.debug(f"Error processing model {model_id} params: {e}")
+                        if has_model_meta:
+                            meta_dict = row[col_idx]
+                            if meta_dict and isinstance(meta_dict, dict):
+                                try:
+                                    collect_file_ids_from_dict(meta_dict, active_file_ids, all_file_ids)
+                                except Exception as e:
+                                    log.debug(f"Error processing model {model_id} meta: {e}")
+                    log.debug(f"Scanned {model_count} models for file references")
+
+            try:
+                retry_on_db_lock(scan_models)
+            except _TABLE_MISSING_ERRORS as e:
+                if _is_table_missing_error(e):
+                    log.debug(f"Model scan skipped (table missing): {e}")
+                else:
+                    raise
+        else:
+            log.debug("Model.params/meta attributes not present — skipping model scan")
 
     except Exception:
         # Do NOT return an empty set — callers use this for deletion decisions.
