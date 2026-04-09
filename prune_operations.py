@@ -11,10 +11,22 @@ import time
 from pathlib import Path
 from typing import Optional, Set, Callable, Any
 from sqlalchemy import select, text, func, and_, or_, not_
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
+
+# Exception types raised for missing tables across database dialects.
+# SQLite raises OperationalError; PostgreSQL raises ProgrammingError.
+_TABLE_MISSING_ERRORS = (OperationalError, ProgrammingError)
+
+
+def _is_table_missing_error(exc: Exception) -> bool:
+    """Return True if the exception indicates a missing table/column."""
+    if isinstance(exc, AttributeError):
+        return True  # ORM attribute missing on this backend version
+    msg = str(exc).lower()
+    return any(s in msg for s in ('no such table', 'does not exist', 'undefined table'))
 
 
 def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
@@ -135,7 +147,7 @@ def get_kb_user_map() -> dict:
     kb_map = {}
     with get_db() as db:
         for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
-            kb_map[kb_id] = uid
+            kb_map[str(kb_id)] = str(uid)
     return kb_map
 
 
@@ -307,9 +319,8 @@ def count_orphaned_records(
                             select(Chat.id)
                         ))
                     ).scalar() or 0
-                except OperationalError as e:
-                    error_msg = str(e).lower()
-                    if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                except _TABLE_MISSING_ERRORS as e:
+                    if _is_table_missing_error(e):
                         log.debug(f"chat_message table does not exist: {e}")
                     else:
                         raise
@@ -455,7 +466,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # JSONB data/meta columns that cause OOM on large databases).
         def _load_file_ids():
             with get_db() as db:
-                return {fid for (fid,) in stream_rows(db, File.id)}
+                return {str(fid) for (fid,) in stream_rows(db, File.id)}
         all_file_ids = retry_on_db_lock(_load_file_ids)
         log.debug(f"Preloaded {len(all_file_ids)} file IDs for validation")
 
@@ -496,10 +507,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         if kb_id_str in active_kb_ids and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
-        except OperationalError as e:
-            # Table may not exist on pre-v0.6.41 schemas — safe to skip
-            error_msg = str(e).lower()
-            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
                 log.debug(f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}")
             else:
                 raise  # Transient DB errors must abort, not produce incomplete sets
@@ -524,10 +533,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         if file_id_str and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
-        except OperationalError as e:
-            # Table may not exist on pre-v0.6.41 schemas — safe to skip
-            error_msg = str(e).lower()
-            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
                 log.debug(f"chat_file table does not exist (pre-v0.6.41 schema): {e}")
             else:
                 raise  # Transient DB errors must abort, not produce incomplete sets
@@ -571,11 +578,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing folder {folder_id} data: {e}")
-        except (OperationalError, AttributeError) as e:
-            # OperationalError: table may not exist on older schemas
-            # AttributeError: model columns (items, data) may not exist on older backends
-            error_msg = str(e).lower()
-            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
+            if _is_table_missing_error(e):
                 log.debug(f"Folder scan skipped (schema incompatibility): {e}")
             else:
                 raise
@@ -592,9 +596,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing message {message_id} data: {e}")
-        except (OperationalError, AttributeError) as e:
-            error_msg = str(e).lower()
-            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
+            if _is_table_missing_error(e):
                 log.debug(f"Message scan skipped (schema incompatibility): {e}")
             else:
                 raise
@@ -618,9 +621,8 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         except Exception as e:
                             log.debug(f"Error processing model {model_id} meta: {e}")
                 log.debug(f"Scanned {model_count} models for file references")
-        except (OperationalError, AttributeError) as e:
-            error_msg = str(e).lower()
-            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+        except (_TABLE_MISSING_ERRORS + (AttributeError,)) as e:
+            if _is_table_missing_error(e):
                 log.debug(f"Model scan skipped (schema incompatibility): {e}")
             else:
                 raise
