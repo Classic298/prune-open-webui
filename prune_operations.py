@@ -22,9 +22,15 @@ _TABLE_MISSING_ERRORS = (OperationalError, ProgrammingError)
 
 
 def _is_table_missing_error(exc: Exception) -> bool:
-    """Return True if the exception indicates a missing table/column."""
+    """Return True if the exception indicates a missing table or relation."""
     msg = str(exc).lower()
-    return any(s in msg for s in ('no such table', 'does not exist', 'undefined table'))
+    # SQLite: "no such table: xxx"
+    # PostgreSQL: 'relation "xxx" does not exist' / 'undefined table'
+    return (
+        'no such table' in msg
+        or ('relation' in msg and 'does not exist' in msg)
+        or 'undefined table' in msg
+    )
 
 
 def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
@@ -459,6 +465,10 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         active_user_ids: Optional set of active user IDs to filter knowledge bases
     """
     active_file_ids = set()
+
+    # Defensively normalize to Set[str] — callers may pass UUID objects
+    if active_user_ids is not None:
+        active_user_ids = {str(uid) for uid in active_user_ids}
 
     try:
         # Preload all valid file IDs to avoid N database queries during validation.
