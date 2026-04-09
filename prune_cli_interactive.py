@@ -56,7 +56,7 @@ try:
     )
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
-        Users, Chat, Chats, File, Files, Notes, Prompts, Models, Knowledges, Functions,
+        Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
@@ -854,6 +854,7 @@ class InteractivePruneUI:
             # be considered active.  This is safe with the streaming-based
             # get_active_file_ids() that replaced the OOM-prone ORM version.
             task = progress.add_task("Recomputing preservation sets...", total=None)
+            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
             kb_map = get_kb_user_map()
             active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
             active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)

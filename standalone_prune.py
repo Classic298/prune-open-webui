@@ -774,6 +774,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # be considered active.  This is safe with the streaming-based
         # get_active_file_ids() that replaced the OOM-prone ORM version.
         log.info("Recomputing preservation sets after deletions")
+        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
         kb_map = get_kb_user_map()
         active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
         active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)

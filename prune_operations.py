@@ -142,11 +142,13 @@ def get_kb_user_map() -> dict:
     Raises on failure — callers (prune execution) must not proceed with an
     empty preservation set, as that could cause over-deletion.
     """
-    kb_map = {}
-    with get_db() as db:
-        for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
-            kb_map[str(kb_id)] = str(uid)
-    return kb_map
+    def _scan():
+        result = {}
+        with get_db() as db:
+            for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
+                result[str(kb_id)] = str(uid)
+        return result
+    return retry_on_db_lock(_scan)
 
 
 # API Compatibility Helpers
