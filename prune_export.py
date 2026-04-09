@@ -468,9 +468,17 @@ class PreviewExporter:
             log.debug(f"Error iterating orphaned chat messages (table may not exist): {e}")
 
     def _iter_orphaned_automations(self) -> Generator[ExportRow, None, None]:
-        """Yield ExportRow for each orphaned automation (owner no longer exists)."""
+        """Yield ExportRow for each orphaned automation (owner no longer exists).
+
+        Also caches automation ID sets for reuse by _iter_orphaned_automation_runs
+        to avoid a redundant second scan of the automations table.
+        """
         if not self.form_data.delete_orphaned_automations or Automation is None:
             return
+
+        # Initialize caches for the runs iterator
+        self._all_automation_ids = set()
+        self._orphaned_automation_ids = set()
 
         try:
             with get_db() as db:
@@ -493,10 +501,13 @@ class PreviewExporter:
                         break
 
                     for automation_id, name, user_id in rows:
+                        auto_id_str = str(automation_id) if automation_id else ""
+                        self._all_automation_ids.add(auto_id_str)
                         if str(user_id) not in self.active_user_ids:
+                            self._orphaned_automation_ids.add(auto_id_str)
                             yield ExportRow(
                                 category="orphaned_automation",
-                                id=str(automation_id) if automation_id else "",
+                                id=auto_id_str,
                                 name=(name or "")[:100],
                                 owner_id=str(user_id) if user_id else "",
                                 size_bytes="",
@@ -510,30 +521,38 @@ class PreviewExporter:
 
         Includes runs whose parent automation is missing AND runs attached
         to automations that will be deleted as orphaned (owner-based).
+
+        Reuses ID sets cached by _iter_orphaned_automations to avoid
+        a redundant second scan of the automations table.
         """
         if not self.form_data.delete_orphaned_automations or AutomationRun is None or Automation is None:
             return
 
+        # Use cached sets from _iter_orphaned_automations if available
+        all_automation_ids = getattr(self, '_all_automation_ids', None)
+        orphaned_automation_ids = getattr(self, '_orphaned_automation_ids', None)
+
         try:
             with get_db() as db:
-                # Build sets of all automation IDs and orphaned automation IDs
-                all_automation_ids = set()
-                orphaned_automation_ids = set()
-                stmt = select(Automation.id, Automation.user_id)
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
+                # Fall back to a fresh scan if cache is not populated
+                if all_automation_ids is None:
+                    all_automation_ids = set()
+                    orphaned_automation_ids = set()
+                    stmt = select(Automation.id, Automation.user_id)
+                    try:
+                        result = db.execute(stmt.execution_options(stream_results=True))
+                    except AttributeError:
+                        result = db.execution_options(stream_results=True).execute(stmt)
 
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-                    for auto_id, auto_uid in rows:
-                        auto_id_str = str(auto_id)
-                        all_automation_ids.add(auto_id_str)
-                        if str(auto_uid) not in self.active_user_ids:
-                            orphaned_automation_ids.add(auto_id_str)
+                    while True:
+                        rows = result.fetchmany(1000)
+                        if not rows:
+                            break
+                        for auto_id, auto_uid in rows:
+                            auto_id_str = str(auto_id)
+                            all_automation_ids.add(auto_id_str)
+                            if str(auto_uid) not in self.active_user_ids:
+                                orphaned_automation_ids.add(auto_id_str)
 
                 # Stream runs and filter in Python
                 stmt = select(AutomationRun.id, AutomationRun.automation_id)

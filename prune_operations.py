@@ -337,25 +337,25 @@ def count_orphaned_records(
             # Count orphaned automations and automation_runs
             if form_data.delete_orphaned_automations and Automation is not None:
                 try:
-                    # Stream automations and filter by user ownership in Python
-                    # to avoid SQLite parameter limits with large active_user_ids
+                    # Single-pass scan: collect both all automation IDs and
+                    # orphaned automation IDs to avoid a redundant second scan
                     orphaned_automation_count = 0
+                    all_automation_ids = set()
                     orphaned_automation_ids = set()
                     for (auto_id, auto_uid,) in stream_rows(
                         db, Automation.id, Automation.user_id
                     ):
+                        auto_id_str = str(auto_id)
+                        all_automation_ids.add(auto_id_str)
                         if str(auto_uid) not in active_user_ids:
                             orphaned_automation_count += 1
-                            orphaned_automation_ids.add(str(auto_id))
+                            orphaned_automation_ids.add(auto_id_str)
                     counts["automations"] = orphaned_automation_count
 
                     # Count orphaned runs: both runs whose parent automation
                     # is missing AND runs attached to automations that will be
                     # deleted as orphaned (owner-based)
                     orphaned_run_count = 0
-                    all_automation_ids = set()
-                    for (auto_id,) in stream_rows(db, Automation.id):
-                        all_automation_ids.add(str(auto_id))
                     for (run_id, run_auto_id,) in stream_rows(
                         db, AutomationRun.id, AutomationRun.automation_id
                     ):
@@ -968,6 +968,7 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
     if Automation is None:
         return 0
 
+    owns_session = db is None
     deleted_count = 0
     try:
         with get_db_context(db) as session:
@@ -980,8 +981,8 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
                 return 0
 
             # Delete runs for these automations first (batched for SQLite)
+            batch_size = 500
             if AutomationRun is not None:
-                batch_size = 500
                 runs_deleted = 0
                 for i in range(0, len(automation_ids), batch_size):
                     batch = automation_ids[i:i + batch_size]
@@ -997,7 +998,9 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
                 user_id=user_id
             ).delete(synchronize_session=False)
 
-            session.commit()
+            # Only commit if we own the session; let the caller commit otherwise
+            if owns_session:
+                session.commit()
 
             if deleted_count > 0:
                 log.info(
@@ -1009,8 +1012,12 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
         if _is_table_missing_error(e):
             log.debug(f"Automation tables do not exist: {e}")
         else:
+            if not owns_session:
+                session.rollback()
             log.warning(f"Error deleting automations for user {user_id}: {e}")
     except Exception as e:
+        if not owns_session:
+            session.rollback()
         log.warning(f"Error deleting automations for user {user_id}: {e}")
 
     return deleted_count
@@ -1047,8 +1054,8 @@ def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
                 return 0
 
             # Delete runs for these automations first (batched for SQLite)
+            batch_size = 500
             if AutomationRun is not None:
-                batch_size = 500
                 runs_deleted = 0
                 for i in range(0, len(orphaned_ids), batch_size):
                     batch = orphaned_ids[i:i + batch_size]
