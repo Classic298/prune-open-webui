@@ -1011,13 +1011,13 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
     except _TABLE_MISSING_ERRORS as e:
         if _is_table_missing_error(e):
             log.debug(f"Automation tables do not exist: {e}")
+        elif not owns_session:
+            raise  # Let caller handle transaction policy
         else:
-            if not owns_session:
-                session.rollback()
             log.warning(f"Error deleting automations for user {user_id}: {e}")
     except Exception as e:
         if not owns_session:
-            session.rollback()
+            raise  # Let caller handle transaction policy
         log.warning(f"Error deleting automations for user {user_id}: {e}")
 
     return deleted_count
