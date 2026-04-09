@@ -49,6 +49,45 @@ def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0
     # This should never be reached, but just in case
     raise last_exception
 
+
+def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
+    """
+    Yield rows in batches using keyset pagination on the first column.
+
+    Unlike stream_results=True (server-side cursors), this approach
+    guarantees bounded memory regardless of DB driver or transaction
+    configuration.  Each batch executes a fresh LIMIT query.
+
+    Args:
+        db: SQLAlchemy session
+        *columns: One or more ORM column descriptors to SELECT
+        filter_clause: Optional SQLAlchemy filter expression
+        batch_size: Number of rows per batch (default 5000)
+
+    Yields:
+        Row tuples from the query
+    """
+    order_col = columns[0]
+    base_stmt = select(*columns)
+    if filter_clause is not None:
+        base_stmt = base_stmt.where(filter_clause)
+    base_stmt = base_stmt.order_by(order_col)
+
+    last_key = None
+    while True:
+        stmt = base_stmt
+        if last_key is not None:
+            stmt = stmt.where(order_col > last_key)
+        stmt = stmt.limit(batch_size)
+        batch = db.execute(stmt).fetchall()
+        if not batch:
+            break
+        yield from batch
+        last_key = batch[-1][0]
+        if len(batch) < batch_size:
+            break
+
+
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
@@ -65,6 +104,24 @@ except ImportError as e:
 
 from prune_models import PruneDataForm
 from prune_core import collect_file_ids_from_dict
+
+
+def get_kb_user_map() -> dict:
+    """Return {kb_id: user_id} from the knowledge table using lightweight SQL.
+
+    This replaces Knowledges.get_knowledge_bases() which can OOM on large
+    databases because SQLAlchemy eager-loads File objects through the
+    knowledge_file relationship, pulling hundreds of MB of JSONB into memory.
+    """
+    try:
+        with get_db() as db:
+            rows = db.execute(
+                select(Knowledge.id, Knowledge.user_id)
+            ).fetchall()
+            return {kb_id: uid for kb_id, uid in rows}
+    except Exception as e:
+        log.error(f"Error querying knowledge table: {e}")
+        return {}
 
 
 # API Compatibility Helpers
@@ -189,13 +246,29 @@ def count_orphaned_records(
 
     try:
         with get_db_context() as db:
-            # Count orphaned files (not in active_file_ids OR owner not in active_user_ids)
-            counts["files"] = db.query(func.count(File.id)).filter(
-                or_(
-                    not_(File.id.in_(active_file_ids)) if active_file_ids else True,
-                    not_(File.user_id.in_(active_user_ids)) if active_user_ids else True,
-                )
-            ).scalar() or 0
+            # Count orphaned files.
+            # A file is orphaned when it is not in the active_file_ids set OR
+            # its owner is not in active_user_ids.
+            #
+            # We cannot pass active_file_ids into a SQL IN() clause directly because
+            # on large databases it can contain 100K+ entries, generating a query
+            # with 100K+ literal strings that OOMs both Python and Postgres.
+            # Instead we count total files minus the ones that are both
+            # referenced AND owned by an active user — using batched IN().
+            total_files = db.query(func.count(File.id)).scalar() or 0
+            if active_file_ids and active_user_ids:
+                active_count = 0
+                file_id_list = list(active_file_ids)
+                batch_size = 5000
+                for i in range(0, len(file_id_list), batch_size):
+                    batch = file_id_list[i:i + batch_size]
+                    active_count += db.query(func.count(File.id)).filter(
+                        File.id.in_(batch),
+                        File.user_id.in_(active_user_ids),
+                    ).scalar() or 0
+                counts["files"] = max(0, total_files - active_count)
+            else:
+                counts["files"] = total_files
 
             # Count other orphaned records by user ownership
             _table_flag_map = [
@@ -351,224 +424,155 @@ def count_audio_cache_files(max_age_days: Optional[int]) -> int:
     return count
 
 
-def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
+def get_active_file_ids(active_user_ids=None) -> Set[str]:
     """
     Get all file IDs that are actively referenced by knowledge bases, chats, folders, messages, and models.
 
+    Uses lightweight SQL queries (streaming only IDs / small columns) to avoid
+    loading full ORM objects with large JSONB payload into memory.
+
     Args:
-        knowledge_bases: Optional pre-fetched list of knowledge bases to avoid duplicate queries
         active_user_ids: Optional set of active user IDs to filter knowledge bases
     """
     active_file_ids = set()
 
     try:
-        # Preload all valid file IDs to avoid N database queries during validation
-        # This is O(1) set lookup instead of O(n) DB queries
-        # Use retry logic in case database is locked
-        all_file_ids = retry_on_db_lock(lambda: {f.id for f in Files.get_files()})
+        # Preload all valid file IDs to avoid N database queries during validation.
+        # Stream only IDs — never load full File ORM objects (which include large
+        # JSONB data/meta columns that cause OOM on large databases).
+        def _load_file_ids():
+            with get_db() as db:
+                return {fid for (fid,) in stream_rows(db, File.id)}
+        all_file_ids = retry_on_db_lock(_load_file_ids)
         log.debug(f"Preloaded {len(all_file_ids)} file IDs for validation")
 
-        # Scan knowledge bases for file references
-        # Note: Since v0.6.41, knowledge.data column was removed and replaced with
-        # knowledge_file table. We now use the existing API to query files per KB.
-        if knowledge_bases is None:
-            knowledge_bases = Knowledges.get_knowledge_bases()
-        log.debug(f"Found {len(knowledge_bases)} knowledge bases")
-
-        # Memory-safe processing: iterate through KBs and extract file IDs incrementally
-        # We don't keep file objects in memory, just collect IDs
-        for kb in knowledge_bases:
-            # CRITICAL FIX: Skip KBs owned by inactive/deleted users to maintain
+        # Build active KB IDs using lightweight SQL (just id + user_id).
+        # Knowledges.get_knowledge_bases() must NOT be used here — on databases
+        # with many files it eager-loads File objects through the knowledge_file
+        # relationship, pulling hundreds of MB of JSONB into memory.
+        kb_user_map = get_kb_user_map()
+        active_kb_ids = set()
+        for kb_id, user_id in kb_user_map.items():
+            # CRITICAL: Skip KBs owned by inactive/deleted users to maintain
             # consistency with active_kb_ids filtering. This prevents false positives
             # where files are considered "active" but their KB is marked as orphaned,
             # leading to incorrectly deleted vector collections.
-            if active_user_ids is not None and kb.user_id not in active_user_ids:
-                log.debug(f"Skipping KB {kb.id} - owner {kb.user_id} not in active users")
-                continue
+            if active_user_ids is None or user_id in active_user_ids:
+                active_kb_ids.add(kb_id)
+        log.debug(f"Found {len(active_kb_ids)} active knowledge bases")
 
-            try:
-                # Use existing API method that queries knowledge_file table
-                # get_files_by_id() performs:
-                # SELECT * FROM file JOIN knowledge_file WHERE knowledge_id = kb.id
-                kb_files = Knowledges.get_files_by_id(kb.id)
-
-                # Extract file IDs only (memory efficient - don't keep full objects)
-                for file in kb_files:
-                    if file.id and file.id in all_file_ids:
-                        active_file_ids.add(file.id)
-
-                # Help GC by clearing the list immediately after processing
-                del kb_files
-
-            except Exception as e:
-                log.debug(f"Error scanning files for knowledge base {kb.id}: {e}")
-
-        # Scan chats for file references
-        # Stream chats using Core SELECT to avoid ORM overhead
-        # Wrap in retry logic in case of database lock
-        def scan_chats():
-            chat_count = 0
-            with get_db() as db:
-                stmt = select(Chat.id, Chat.chat)
-                # SQLAlchemy 2.0+ compatibility: execution_options moved to statement
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    # Fallback for older SQLAlchemy versions
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for chat_id, chat_dict in rows:
-                        chat_count += 1
-
-                        # Skip if no chat data or not a dict
-                        if not chat_dict or not isinstance(chat_dict, dict):
-                            continue
-
-                        try:
-                            # Direct dict traversal (no json.dumps needed)
-                            collect_file_ids_from_dict(chat_dict, active_file_ids, all_file_ids)
-                        except Exception as e:
-                            log.debug(f"Error processing chat {chat_id} for file references: {e}")
-
-            return chat_count
-
-        chat_count = retry_on_db_lock(scan_chats)
-        log.debug(f"Scanned {chat_count} chats for file references")
-
-        # Scan chat_file table for file references
-        # Note: Since v0.6.41+, chat files are stored in dedicated chat_file junction table.
-        # We scan both the chat.chat JSON (legacy) and chat_file table (new) to ensure completeness.
+        # Query the knowledge_file junction table directly for file IDs.
+        # This replaces the N+1 pattern of Knowledges.get_files_by_id() per KB,
+        # and avoids loading full File ORM objects (large JSONB data/meta columns).
         try:
             with get_db() as db:
-                stmt = select(ChatFile.file_id)
-                # SQLAlchemy 2.0+ compatibility
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                chat_file_count = 0
+                # knowledge_file is a junction table without a dedicated ORM model,
+                # so use raw SQL with batched fetching to stay memory-safe
+                result = db.execute(text("SELECT knowledge_id, file_id FROM knowledge_file"))
+                kf_count = 0
                 while True:
-                    rows = result.fetchmany(1000)
+                    rows = result.fetchmany(5000)
                     if not rows:
                         break
-
-                    for (file_id,) in rows:
-                        chat_file_count += 1
-                        if file_id and file_id in all_file_ids:
+                    for kb_id, file_id in rows:
+                        kf_count += 1
+                        if kb_id in active_kb_ids and file_id in all_file_ids:
                             active_file_ids.add(file_id)
+                log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
+        except Exception as e:
+            log.debug(f"knowledge_file table query failed (table may not exist yet): {e}")
 
-                log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
+        # Scan chat_file junction table first (cheap — just UUIDs, no JSONB).
+        # Since v0.6.41+ chat files are stored here; if the table is populated
+        # we can skip the very expensive full-JSON chat scan below.
+        chat_file_count = 0
+        try:
+            with get_db() as db:
+                for (file_id,) in stream_rows(db, ChatFile.file_id):
+                    chat_file_count += 1
+                    if file_id and file_id in all_file_ids:
+                        active_file_ids.add(file_id)
+            log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
         except Exception as e:
             # chat_file table might not exist in older database versions
             log.debug(f"Error scanning chat_file table (table may not exist yet): {e}")
 
+        # Scan chat JSON only when chat_file table is empty or missing (legacy DBs).
+        # Each row's JSONB can be megabytes, so use a small batch size.
+        if chat_file_count == 0:
+            def scan_chats():
+                chat_count = 0
+                with get_db() as db:
+                    for chat_id, chat_dict in stream_rows(
+                        db, Chat.id, Chat.chat, batch_size=50
+                    ):
+                        chat_count += 1
+                        if not chat_dict or not isinstance(chat_dict, dict):
+                            continue
+                        try:
+                            collect_file_ids_from_dict(chat_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing chat {chat_id} for file references: {e}")
+                return chat_count
+
+            chat_count = retry_on_db_lock(scan_chats)
+            log.debug(f"Scanned {chat_count} chats (legacy JSON) for file references")
+        else:
+            log.debug("Skipping legacy chat JSON scan — chat_file table is populated")
+
         # Scan folders for file references
-        # Stream folders using Core SELECT to avoid ORM overhead
         try:
             with get_db() as db:
-                stmt = select(Folder.id, Folder.items, Folder.data)
-                # SQLAlchemy 2.0+ compatibility: execution_options moved to statement
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    # Fallback for older SQLAlchemy versions
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(100)
-                    if not rows:
-                        break
-
-                    for folder_id, items_dict, data_dict in rows:
-                        # Process folder.items
-                        if items_dict:
-                            try:
-                                # Direct dict traversal (no json.dumps needed)
-                                collect_file_ids_from_dict(items_dict, active_file_ids, all_file_ids)
-                            except Exception as e:
-                                log.debug(f"Error processing folder {folder_id} items: {e}")
-
-                        # Process folder.data
-                        if data_dict:
-                            try:
-                                # Direct dict traversal (no json.dumps needed)
-                                collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
-                            except Exception as e:
-                                log.debug(f"Error processing folder {folder_id} data: {e}")
-
+                for folder_id, items_dict, data_dict in stream_rows(
+                    db, Folder.id, Folder.items, Folder.data, batch_size=100
+                ):
+                    if items_dict:
+                        try:
+                            collect_file_ids_from_dict(items_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing folder {folder_id} items: {e}")
+                    if data_dict:
+                        try:
+                            collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing folder {folder_id} data: {e}")
         except Exception as e:
             log.debug(f"Error scanning folders for file references: {e}")
 
         # Scan standalone messages for file references
-        # Stream messages using Core SELECT to avoid text() and yield_per issues
         try:
             with get_db() as db:
-                stmt = select(Message.id, Message.data).where(Message.data.isnot(None))
-                # SQLAlchemy 2.0+ compatibility: execution_options moved to statement
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    # Fallback for older SQLAlchemy versions
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for message_id, message_data_dict in rows:
-                        if message_data_dict:
-                            try:
-                                # Direct dict traversal (no json.dumps needed)
-                                collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
-                            except Exception as e:
-                                log.debug(f"Error processing message {message_id} data: {e}")
-
+                for message_id, message_data_dict in stream_rows(
+                    db, Message.id, Message.data,
+                    filter_clause=Message.data.isnot(None), batch_size=100
+                ):
+                    if message_data_dict:
+                        try:
+                            collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing message {message_id} data: {e}")
         except Exception as e:
             log.debug(f"Error scanning messages for file references: {e}")
 
         # Scan models for file references in params and meta fields
-        # Models can have files attached (e.g. in meta or params JSON fields)
         try:
             with get_db() as db:
-                stmt = select(Model.id, Model.params, Model.meta)
-                # SQLAlchemy 2.0+ compatibility
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
                 model_count = 0
-                while True:
-                    rows = result.fetchmany(100)
-                    if not rows:
-                        break
-
-                    for model_id, params_dict, meta_dict in rows:
-                        model_count += 1
-
-                        # Scan params JSON field for file references
-                        if params_dict and isinstance(params_dict, dict):
-                            try:
-                                collect_file_ids_from_dict(params_dict, active_file_ids, all_file_ids)
-                            except Exception as e:
-                                log.debug(f"Error processing model {model_id} params: {e}")
-
-                        # Scan meta JSON field for file references
-                        if meta_dict and isinstance(meta_dict, dict):
-                            try:
-                                collect_file_ids_from_dict(meta_dict, active_file_ids, all_file_ids)
-                            except Exception as e:
-                                log.debug(f"Error processing model {model_id} meta: {e}")
-
+                for model_id, params_dict, meta_dict in stream_rows(
+                    db, Model.id, Model.params, Model.meta, batch_size=100
+                ):
+                    model_count += 1
+                    if params_dict and isinstance(params_dict, dict):
+                        try:
+                            collect_file_ids_from_dict(params_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing model {model_id} params: {e}")
+                    if meta_dict and isinstance(meta_dict, dict):
+                        try:
+                            collect_file_ids_from_dict(meta_dict, active_file_ids, all_file_ids)
+                        except Exception as e:
+                            log.debug(f"Error processing model {model_id} meta: {e}")
                 log.debug(f"Scanned {model_count} models for file references")
-
         except Exception as e:
             log.debug(f"Error scanning models for file references: {e}")
 
