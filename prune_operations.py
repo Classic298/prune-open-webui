@@ -124,11 +124,11 @@ def get_kb_user_map() -> dict:
     Raises on failure — callers (prune execution) must not proceed with an
     empty preservation set, as that could cause over-deletion.
     """
+    kb_map = {}
     with get_db() as db:
-        rows = db.execute(
-            select(Knowledge.id, Knowledge.user_id)
-        ).fetchall()
-        return {kb_id: uid for kb_id, uid in rows}
+        for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
+            kb_map[kb_id] = uid
+    return kb_map
 
 
 # API Compatibility Helpers
