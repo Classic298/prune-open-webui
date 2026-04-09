@@ -724,7 +724,7 @@ class InteractivePruneUI:
             deleted_files = 0
             with get_db() as db:
                 for fid, uid in stream_rows(db, File.id, File.user_id):
-                    if fid not in active_file_ids or uid not in active_user_ids:
+                    if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
                         if safe_delete_file_by_id(fid, self.vector_cleaner, db=db):
                             deleted_files += 1
             progress.update(task, completed=True)

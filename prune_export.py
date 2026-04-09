@@ -272,17 +272,20 @@ class PreviewExporter:
                         break
 
                     for file_id, filename, user_id in rows:
+                        # Normalize to str — ORM can return uuid.UUID on Postgres
+                        file_id_str = str(file_id) if file_id else ""
+                        user_id_str = str(user_id) if user_id else ""
                         is_orphaned = (
-                            (file_id not in self.active_file_ids)
-                            or (user_id not in self.active_user_ids)
+                            (file_id_str not in self.active_file_ids)
+                            or (user_id_str not in self.active_user_ids)
                         )
                         if not is_orphaned:
                             continue
 
                         reason_parts = []
-                        if file_id not in self.active_file_ids:
+                        if file_id_str not in self.active_file_ids:
                             reason_parts.append("not referenced")
-                        if user_id not in self.active_user_ids:
+                        if user_id_str not in self.active_user_ids:
                             reason_parts.append("owner not in active users")
 
                         yield ExportRow(

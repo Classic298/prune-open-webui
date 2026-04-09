@@ -626,7 +626,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # fresh queries per batch, so deletions don't disrupt iteration
         with get_db() as db:
             for fid, uid in stream_rows(db, File.id, File.user_id):
-                if fid not in active_file_ids or uid not in active_user_ids:
+                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
                     if safe_delete_file_by_id(fid, vector_cleaner, db=db):
                         deleted_files += 1
 
