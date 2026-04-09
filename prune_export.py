@@ -356,7 +356,7 @@ class PreviewExporter:
             try:
                 with get_db() as db:
                     for folder in get_all_folders(db=db):
-                        if folder.user_id not in self.active_user_ids:
+                        if str(folder.user_id) not in self.active_user_ids:
                             yield ExportRow(
                                 category="orphaned_folder",
                                 id=str(folder.id) if folder.id else "",

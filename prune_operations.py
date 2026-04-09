@@ -286,7 +286,7 @@ def count_orphaned_records(
             # large instances.
             orphaned_file_count = 0
             for fid, uid in stream_rows(db, File.id, File.user_id):
-                if fid not in active_file_ids or uid not in active_user_ids:
+                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
                     orphaned_file_count += 1
             counts["files"] = orphaned_file_count
 

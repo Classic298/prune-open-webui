@@ -474,7 +474,7 @@ class InteractivePruneUI:
                 # hundreds of MB of JSONB into memory on large databases.
                 kb_map = get_kb_user_map()
                 all_users = Users.get_users()["users"]
-                self._active_user_ids = {user.id for user in all_users}
+                self._active_user_ids = {str(user.id) for user in all_users}
                 self._active_kb_ids = {
                     kb_id
                     for kb_id, uid in kb_map.items()
@@ -713,7 +713,7 @@ class InteractivePruneUI:
 
             # Stage 2-3: Orphaned data
             task = progress.add_task("Building preservation set...", total=None)
-            active_user_ids = {user.id for user in Users.get_users()["users"]}
+            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
             kb_map = get_kb_user_map()
             active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
             active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
@@ -737,7 +737,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for kb in Knowledges.get_knowledge_bases(db=db):
-                        if kb.user_id not in active_user_ids:
+                        if str(kb.user_id) not in active_user_ids:
                             self.vector_cleaner.delete_collection(kb.id)
                             Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted += 1
@@ -751,7 +751,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
-                        if chat_uid not in active_user_ids:
+                        if str(chat_uid) not in active_user_ids:
                             Chats.delete_chat_by_id(chat_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -763,7 +763,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for tool in Tools.get_tools(db=db):
-                        if tool.user_id not in active_user_ids:
+                        if str(tool.user_id) not in active_user_ids:
                             Tools.delete_tool_by_id(tool.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -775,7 +775,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for function in Functions.get_functions(db=db):
-                        if function.user_id not in active_user_ids:
+                        if str(function.user_id) not in active_user_ids:
                             Functions.delete_function_by_id(function.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -787,7 +787,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for prompt in Prompts.get_prompts(db=db):
-                        if prompt.user_id not in active_user_ids:
+                        if str(prompt.user_id) not in active_user_ids:
                             Prompts.delete_prompt_by_command(prompt.command, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -799,7 +799,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for model in Models.get_all_models(db=db):
-                        if model.user_id not in active_user_ids:
+                        if str(model.user_id) not in active_user_ids:
                             Models.delete_model_by_id(model.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -811,7 +811,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for note in Notes.get_notes(db=db):
-                        if note.user_id not in active_user_ids:
+                        if str(note.user_id) not in active_user_ids:
                             Notes.delete_note_by_id(note.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -823,7 +823,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for skill in Skills.get_skills(db=db):
-                        if skill.user_id not in active_user_ids:
+                        if str(skill.user_id) not in active_user_ids:
                             Skills.delete_skill_by_id(skill.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -835,7 +835,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for folder in self._get_all_folders_safe(db=db):
-                        if folder.user_id not in active_user_ids:
+                        if str(folder.user_id) not in active_user_ids:
                             Folders.delete_folder_by_id_and_user_id(folder.id, folder.user_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)

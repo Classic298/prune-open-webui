@@ -492,7 +492,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             # Get counts for all enabled operations
             kb_map = get_kb_user_map()
             all_users = Users.get_users()["users"]
-            active_user_ids = {user.id for user in all_users}
+            active_user_ids = {str(user.id) for user in all_users}
             active_kb_ids = {
                 kb_id
                 for kb_id, uid in kb_map.items()
@@ -609,7 +609,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # Stage 2: Build preservation set
         log.info("Building preservation set")
 
-        active_user_ids = {user.id for user in Users.get_users()["users"]}
+        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
         log.info(f"Found {len(active_user_ids)} active users")
 
         kb_map = get_kb_user_map()
@@ -637,7 +637,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         if form_data.delete_orphaned_knowledge_bases:
             with get_db() as db:
                 for kb in Knowledges.get_knowledge_bases(db=db):
-                    if kb.user_id not in active_user_ids:
+                    if str(kb.user_id) not in active_user_ids:
                         if vector_cleaner.delete_collection(kb.id):
                             Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted_kbs += 1
@@ -655,7 +655,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             chats_deleted = 0
             with get_db() as db:
                 for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
-                    if chat_uid not in active_user_ids:
+                    if str(chat_uid) not in active_user_ids:
                         Chats.delete_chat_by_id(chat_id, db=db)
                         chats_deleted += 1
                         deleted_others += 1
@@ -668,7 +668,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             tools_deleted = 0
             with get_db() as db:
                 for tool in Tools.get_tools(db=db):
-                    if tool.user_id not in active_user_ids:
+                    if str(tool.user_id) not in active_user_ids:
                         Tools.delete_tool_by_id(tool.id, db=db)
                         tools_deleted += 1
                         deleted_others += 1
@@ -681,7 +681,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             functions_deleted = 0
             with get_db() as db:
                 for function in Functions.get_functions(db=db):
-                    if function.user_id not in active_user_ids:
+                    if str(function.user_id) not in active_user_ids:
                         Functions.delete_function_by_id(function.id, db=db)
                         functions_deleted += 1
                         deleted_others += 1
@@ -694,7 +694,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             notes_deleted = 0
             with get_db() as db:
                 for note in Notes.get_notes(db=db):
-                    if note.user_id not in active_user_ids:
+                    if str(note.user_id) not in active_user_ids:
                         Notes.delete_note_by_id(note.id, db=db)
                         notes_deleted += 1
                         deleted_others += 1
@@ -707,7 +707,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             skills_deleted = 0
             with get_db() as db:
                 for skill in Skills.get_skills(db=db):
-                    if skill.user_id not in active_user_ids:
+                    if str(skill.user_id) not in active_user_ids:
                         Skills.delete_skill_by_id(skill.id, db=db)
                         skills_deleted += 1
                         deleted_others += 1
@@ -720,7 +720,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             prompts_deleted = 0
             with get_db() as db:
                 for prompt in Prompts.get_prompts(db=db):
-                    if prompt.user_id not in active_user_ids:
+                    if str(prompt.user_id) not in active_user_ids:
                         Prompts.delete_prompt_by_command(prompt.command, db=db)
                         prompts_deleted += 1
                         deleted_others += 1
@@ -733,7 +733,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             models_deleted = 0
             with get_db() as db:
                 for model in Models.get_all_models(db=db):
-                    if model.user_id not in active_user_ids:
+                    if str(model.user_id) not in active_user_ids:
                         Models.delete_model_by_id(model.id, db=db)
                         models_deleted += 1
                         deleted_others += 1
@@ -746,7 +746,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             folders_deleted = 0
             with get_db() as db:
                 for folder in get_all_folders(db=db):
-                    if folder.user_id not in active_user_ids:
+                    if str(folder.user_id) not in active_user_ids:
                         Folders.delete_folder_by_id_and_user_id(
                             folder.id, folder.user_id, db=db
                         )
