@@ -1097,9 +1097,12 @@ def delete_orphaned_automation_runs() -> int:
             orphaned_ids = [
                 str(row.id) for row in
                 db.query(AutomationRun.id).filter(
-                    not_(AutomationRun.automation_id.in_(
-                        select(Automation.id)
-                    ))
+                    or_(
+                        AutomationRun.automation_id.is_(None),
+                        not_(AutomationRun.automation_id.in_(
+                            select(Automation.id)
+                        ))
+                    )
                 ).all()
             ]
 
