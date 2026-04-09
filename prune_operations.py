@@ -337,20 +337,32 @@ def count_orphaned_records(
             # Count orphaned automations and automation_runs
             if form_data.delete_orphaned_automations and Automation is not None:
                 try:
-                    if active_user_ids:
-                        counts["automations"] = db.query(
-                            func.count()
-                        ).select_from(Automation).filter(
-                            not_(Automation.user_id.in_(active_user_ids))
-                        ).scalar() or 0
+                    # Stream automations and filter by user ownership in Python
+                    # to avoid SQLite parameter limits with large active_user_ids
+                    orphaned_automation_count = 0
+                    orphaned_automation_ids = set()
+                    for (auto_id, auto_uid,) in stream_rows(
+                        db, Automation.id, Automation.user_id
+                    ):
+                        if str(auto_uid) not in active_user_ids:
+                            orphaned_automation_count += 1
+                            orphaned_automation_ids.add(str(auto_id))
+                    counts["automations"] = orphaned_automation_count
 
-                    counts["automation_runs"] = db.query(
-                        func.count(AutomationRun.id)
-                    ).filter(
-                        not_(AutomationRun.automation_id.in_(
-                            select(Automation.id)
-                        ))
-                    ).scalar() or 0
+                    # Count orphaned runs: both runs whose parent automation
+                    # is missing AND runs attached to automations that will be
+                    # deleted as orphaned (owner-based)
+                    orphaned_run_count = 0
+                    all_automation_ids = set()
+                    for (auto_id,) in stream_rows(db, Automation.id):
+                        all_automation_ids.add(str(auto_id))
+                    for (run_id, run_auto_id,) in stream_rows(
+                        db, AutomationRun.id, AutomationRun.automation_id
+                    ):
+                        run_auto_str = str(run_auto_id)
+                        if run_auto_str not in all_automation_ids or run_auto_str in orphaned_automation_ids:
+                            orphaned_run_count += 1
+                    counts["automation_runs"] = orphaned_run_count
                 except _TABLE_MISSING_ERRORS as e:
                     if _is_table_missing_error(e):
                         log.debug(f"Automation tables do not exist (pre-v0.8.13 schema): {e}")
@@ -967,10 +979,14 @@ def delete_user_automations(user_id: str, db: Optional[Session] = None) -> int:
             if not automation_ids:
                 return 0
 
-            # Delete runs for these automations first
-            runs_deleted = session.query(AutomationRun).filter(
-                AutomationRun.automation_id.in_(automation_ids)
-            ).delete(synchronize_session=False)
+            # Delete runs for these automations first (batched for SQLite)
+            batch_size = 500
+            runs_deleted = 0
+            for i in range(0, len(automation_ids), batch_size):
+                batch = automation_ids[i:i + batch_size]
+                runs_deleted += session.query(AutomationRun).filter(
+                    AutomationRun.automation_id.in_(batch)
+                ).delete(synchronize_session=False)
 
             # Delete the automations themselves
             deleted_count = session.query(Automation).filter_by(
@@ -1009,17 +1025,19 @@ def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
     Returns:
         Number of automations deleted
     """
-    if Automation is None or not active_user_ids:
+    if Automation is None:
         return 0
 
     try:
         with get_db_context() as db:
-            orphaned_ids = [
-                str(row.id) for row in
-                db.query(Automation.id).filter(
-                    not_(Automation.user_id.in_(active_user_ids))
-                ).all()
-            ]
+            # Stream automations and filter by user ownership in Python
+            # to avoid SQLite parameter limits with large active_user_ids
+            orphaned_ids = []
+            for (auto_id, auto_uid,) in stream_rows(
+                db, Automation.id, Automation.user_id
+            ):
+                if str(auto_uid) not in active_user_ids:
+                    orphaned_ids.append(str(auto_id))
 
             if not orphaned_ids:
                 return 0

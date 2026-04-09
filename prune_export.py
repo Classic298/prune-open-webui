@@ -472,17 +472,14 @@ class PreviewExporter:
         if not self.form_data.delete_orphaned_automations or Automation is None:
             return
 
-        if not self.active_user_ids:
-            return
-
         try:
             with get_db() as db:
+                # Stream all automations and filter by user ownership in Python
+                # to avoid SQLite parameter limits with large active_user_ids
                 stmt = select(
                     Automation.id,
                     Automation.name,
                     Automation.user_id,
-                ).filter(
-                    not_(Automation.user_id.in_(self.active_user_ids))
                 )
 
                 try:
@@ -496,33 +493,50 @@ class PreviewExporter:
                         break
 
                     for automation_id, name, user_id in rows:
-                        yield ExportRow(
-                            category="orphaned_automation",
-                            id=str(automation_id) if automation_id else "",
-                            name=(name or "")[:100],
-                            owner_id=str(user_id) if user_id else "",
-                            size_bytes="",
-                            reason="owner not in active users",
-                        )
+                        if str(user_id) not in self.active_user_ids:
+                            yield ExportRow(
+                                category="orphaned_automation",
+                                id=str(automation_id) if automation_id else "",
+                                name=(name or "")[:100],
+                                owner_id=str(user_id) if user_id else "",
+                                size_bytes="",
+                                reason="owner not in active users",
+                            )
         except Exception as e:
             log.debug(f"Error iterating orphaned automations (table may not exist): {e}")
 
     def _iter_orphaned_automation_runs(self) -> Generator[ExportRow, None, None]:
-        """Yield ExportRow for each orphaned automation run (parent automation no longer exists)."""
+        """Yield ExportRow for each orphaned automation run.
+
+        Includes runs whose parent automation is missing AND runs attached
+        to automations that will be deleted as orphaned (owner-based).
+        """
         if not self.form_data.delete_orphaned_automations or AutomationRun is None or Automation is None:
             return
 
         try:
             with get_db() as db:
-                stmt = select(
-                    AutomationRun.id,
-                    AutomationRun.automation_id,
-                ).filter(
-                    not_(AutomationRun.automation_id.in_(
-                        select(Automation.id)
-                    ))
-                )
+                # Build sets of all automation IDs and orphaned automation IDs
+                all_automation_ids = set()
+                orphaned_automation_ids = set()
+                stmt = select(Automation.id, Automation.user_id)
+                try:
+                    result = db.execute(stmt.execution_options(stream_results=True))
+                except AttributeError:
+                    result = db.execution_options(stream_results=True).execute(stmt)
 
+                while True:
+                    rows = result.fetchmany(1000)
+                    if not rows:
+                        break
+                    for auto_id, auto_uid in rows:
+                        auto_id_str = str(auto_id)
+                        all_automation_ids.add(auto_id_str)
+                        if str(auto_uid) not in self.active_user_ids:
+                            orphaned_automation_ids.add(auto_id_str)
+
+                # Stream runs and filter in Python
+                stmt = select(AutomationRun.id, AutomationRun.automation_id)
                 try:
                     result = db.execute(stmt.execution_options(stream_results=True))
                 except AttributeError:
@@ -534,13 +548,22 @@ class PreviewExporter:
                         break
 
                     for run_id, automation_id in rows:
+                        auto_id_str = str(automation_id) if automation_id else ""
+                        # Orphaned if parent missing OR parent will be deleted
+                        if auto_id_str not in all_automation_ids:
+                            reason = "parent automation no longer exists"
+                        elif auto_id_str in orphaned_automation_ids:
+                            reason = "parent automation is orphaned (owner deleted)"
+                        else:
+                            continue
+
                         yield ExportRow(
                             category="orphaned_automation_run",
                             id=str(run_id) if run_id else "",
                             name=f"automation: {automation_id}" if automation_id else "",
                             owner_id="",
                             size_bytes="",
-                            reason="parent automation no longer exists",
+                            reason=reason,
                         )
         except Exception as e:
             log.debug(f"Error iterating orphaned automation runs (table may not exist): {e}")
