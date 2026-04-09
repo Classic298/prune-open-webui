@@ -72,9 +72,17 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
         filter_clause: Optional SQLAlchemy filter expression
         batch_size: Number of rows per batch (default 5000)
 
+    Raises:
+        ValueError: If no columns are provided or batch_size is invalid
+
     Yields:
         Row tuples from the query
     """
+    if not columns:
+        raise ValueError("stream_rows requires at least one column")
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
     order_col = columns[0]
     base_stmt = select(*columns).where(order_col.isnot(None))
     if filter_clause is not None:
@@ -428,7 +436,7 @@ def count_audio_cache_files(max_age_days: Optional[int]) -> int:
     return count
 
 
-def get_active_file_ids(active_user_ids=None) -> Set[str]:
+def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
     """
     Get all file IDs that are actively referenced by knowledge bases, chats, folders, messages, and models.
 
@@ -436,6 +444,7 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
     loading full ORM objects with large JSONB payload into memory.
 
     Args:
+        knowledge_bases: Deprecated, ignored.  Kept for call-site compatibility.
         active_user_ids: Optional set of active user IDs to filter knowledge bases
     """
     active_file_ids = set()
@@ -480,8 +489,12 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                         break
                     for kb_id, file_id in rows:
                         kf_count += 1
-                        if kb_id in active_kb_ids and file_id in all_file_ids:
-                            active_file_ids.add(file_id)
+                        # Normalize to str — text() queries can return
+                        # driver-native types (e.g. uuid.UUID on Postgres)
+                        file_id_str = str(file_id) if file_id else None
+                        kb_id_str = str(kb_id) if kb_id else None
+                        if kb_id_str in active_kb_ids and file_id_str in all_file_ids:
+                            active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
         except OperationalError as e:
             # Table may not exist on pre-v0.6.41 schemas — safe to skip
@@ -505,8 +518,11 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                         break
                     for (file_id,) in rows:
                         chat_file_count += 1
-                        if file_id and file_id in all_file_ids:
-                            active_file_ids.add(file_id)
+                        # Normalize to str — text() queries can return
+                        # driver-native types (e.g. uuid.UUID on Postgres)
+                        file_id_str = str(file_id) if file_id else None
+                        if file_id_str and file_id_str in all_file_ids:
+                            active_file_ids.add(file_id_str)
                 log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
         except OperationalError as e:
             # Table may not exist on pre-v0.6.41 schemas — safe to skip
