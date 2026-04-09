@@ -181,10 +181,13 @@ class PreviewExporter:
                     conditions.append(or_(Chat.archived == False, Chat.archived == None))
 
                 if self.form_data.exempt_chats_in_folders:
-                    conditions.append(and_(
-                        Chat.folder_id == None,
-                        or_(Chat.pinned == False, Chat.pinned == None)
-                    ))
+                    folder_conditions = []
+                    if hasattr(Chat, 'folder_id'):
+                        folder_conditions.append(Chat.folder_id == None)
+                    if hasattr(Chat, 'pinned'):
+                        folder_conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
+                    if folder_conditions:
+                        conditions.append(and_(*folder_conditions))
 
                 stmt = select(Chat.id, Chat.title, Chat.user_id).filter(*conditions)
 
@@ -250,14 +253,13 @@ class PreviewExporter:
 
     def _iter_orphaned_files(self) -> Generator[ExportRow, None, None]:
         """Yield ExportRow for each orphaned file record."""
+        # Cannot use File.id.in_(active_file_ids) as a SQL filter because
+        # active_file_ids can contain 100K+ entries, generating unseemly
+        # large queries that OOM both Python and the database.  Instead,
+        # stream all file records and check membership in Python.
         try:
             with get_db() as db:
-                stmt = select(File.id, File.filename, File.user_id).filter(
-                    or_(
-                        not_(File.id.in_(self.active_file_ids)) if self.active_file_ids else True,
-                        not_(File.user_id.in_(self.active_user_ids)) if self.active_user_ids else True,
-                    )
-                )
+                stmt = select(File.id, File.filename, File.user_id)
 
                 try:
                     result = db.execute(stmt.execution_options(stream_results=True))
@@ -270,6 +272,13 @@ class PreviewExporter:
                         break
 
                     for file_id, filename, user_id in rows:
+                        is_orphaned = (
+                            (file_id not in self.active_file_ids)
+                            or (user_id not in self.active_user_ids)
+                        )
+                        if not is_orphaned:
+                            continue
+
                         reason_parts = []
                         if file_id not in self.active_file_ids:
                             reason_parts.append("not referenced")
