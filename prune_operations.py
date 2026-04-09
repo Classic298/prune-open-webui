@@ -58,15 +58,17 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
     guarantees bounded memory regardless of DB driver or transaction
     configuration.  Each batch executes a fresh LIMIT query.
 
-    The first column is used as the keyset cursor and must be non-nullable
-    (NULLs are excluded automatically).  If the first column can be NULL
-    on a full batch boundary, the cursor would stay None and re-fetch the
-    same page indefinitely.
+    IMPORTANT: The first column is used as the keyset cursor and must be
+    both **unique** and **non-nullable**.  Non-unique keys can cause rows
+    to be silently skipped at batch boundaries (WHERE col > last_key skips
+    remaining rows with the same value).  NULLs are excluded automatically
+    to prevent infinite re-fetch.
 
     Args:
         db: SQLAlchemy session
         *columns: One or more ORM column descriptors to SELECT.
-                  The first column is used for ordering/keysetting.
+                  The first column is used for ordering/keysetting
+                  and MUST be unique (typically a primary key).
         filter_clause: Optional SQLAlchemy filter expression
         batch_size: Number of rows per batch (default 5000)
 
@@ -267,7 +269,11 @@ def count_orphaned_records(
             if active_file_ids and active_user_ids:
                 active_count = 0
                 file_id_list = list(active_file_ids)
-                batch_size = 5000
+                # SQLite's default SQLITE_MAX_VARIABLE_NUMBER is ~999.
+                # Each query uses len(batch) + len(active_user_ids) params,
+                # so cap batch size to stay safely under the limit.
+                max_params = 900
+                batch_size = max(1, max_params - len(active_user_ids))
                 for i in range(0, len(file_id_list), batch_size):
                     batch = file_id_list[i:i + batch_size]
                     active_count += db.query(func.count(File.id)).filter(
@@ -501,14 +507,21 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
 
         # Scan chat_file junction table (cheap — just UUIDs, no JSONB).
         # Since v0.6.41+ chat files are stored in a dedicated junction table.
+        # Use fetchmany (not stream_rows) because chat_file.file_id is
+        # non-unique — keyset pagination requires a unique cursor column.
         try:
             with get_db() as db:
+                result = db.execute(text("SELECT file_id FROM chat_file"))
                 chat_file_count = 0
-                for (file_id,) in stream_rows(db, ChatFile.file_id):
-                    chat_file_count += 1
-                    if file_id and file_id in all_file_ids:
-                        active_file_ids.add(file_id)
-            log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
+                while True:
+                    rows = result.fetchmany(5000)
+                    if not rows:
+                        break
+                    for (file_id,) in rows:
+                        chat_file_count += 1
+                        if file_id and file_id in all_file_ids:
+                            active_file_ids.add(file_id)
+                log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
         except OperationalError as e:
             # Table may not exist on pre-v0.6.41 schemas — safe to skip
             error_msg = str(e).lower()
