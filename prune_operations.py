@@ -555,10 +555,12 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing folder {folder_id} data: {e}")
-        except OperationalError as e:
+        except (OperationalError, AttributeError) as e:
+            # OperationalError: table may not exist on older schemas
+            # AttributeError: model columns (items, data) may not exist on older backends
             error_msg = str(e).lower()
-            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
-                log.debug(f"Folder table does not exist: {e}")
+            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Folder scan skipped (schema incompatibility): {e}")
             else:
                 raise
 
@@ -574,10 +576,10 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                             collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
                         except Exception as e:
                             log.debug(f"Error processing message {message_id} data: {e}")
-        except OperationalError as e:
+        except (OperationalError, AttributeError) as e:
             error_msg = str(e).lower()
-            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
-                log.debug(f"Message table does not exist: {e}")
+            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Message scan skipped (schema incompatibility): {e}")
             else:
                 raise
 
@@ -600,10 +602,10 @@ def get_active_file_ids(active_user_ids=None) -> Set[str]:
                         except Exception as e:
                             log.debug(f"Error processing model {model_id} meta: {e}")
                 log.debug(f"Scanned {model_count} models for file references")
-        except OperationalError as e:
+        except (OperationalError, AttributeError) as e:
             error_msg = str(e).lower()
-            if 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
-                log.debug(f"Model table does not exist: {e}")
+            if isinstance(e, AttributeError) or 'no such table' in error_msg or 'does not exist' in error_msg or 'undefined table' in error_msg:
+                log.debug(f"Model scan skipped (schema incompatibility): {e}")
             else:
                 raise
 

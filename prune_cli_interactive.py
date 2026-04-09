@@ -62,7 +62,7 @@ try:
     )
     import time
     import sqlite3
-    from sqlalchemy import text, select, or_
+    from sqlalchemy import text, or_
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     print("\nMake sure:")

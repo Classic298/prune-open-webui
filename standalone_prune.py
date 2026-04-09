@@ -54,7 +54,7 @@ try:
         stream_rows,
     )
     from prune_imports import (
-        Users, Chat, Chats, File, Files, Notes, Prompts, Models, Knowledges, Functions,
+        Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
