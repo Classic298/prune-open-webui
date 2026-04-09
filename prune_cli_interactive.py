@@ -45,22 +45,24 @@ try:
         count_orphaned_uploads,
         count_audio_cache_files,
         get_active_file_ids,
+        get_kb_user_map,
         get_all_folders,
         safe_delete_file_by_id,
         cleanup_orphaned_uploads,
         delete_inactive_users,
         cleanup_audio_cache,
         delete_orphaned_chat_messages,
+        stream_rows,
     )
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
-        Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
+        Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
     import time
     import sqlite3
-    from sqlalchemy import text
+    from sqlalchemy import text, or_
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     print("\nMake sure:")
@@ -466,16 +468,19 @@ class InteractivePruneUI:
             task = progress.add_task("Analyzing database...", total=None)
 
             try:
-                # Build sets and cache on self for export reuse
-                knowledge_bases = Knowledges.get_knowledge_bases()
+                # Build sets and cache on self for export reuse.
+                # Use lightweight SQL instead of Knowledges.get_knowledge_bases()
+                # which eager-loads File ORM objects through relationships, pulling
+                # hundreds of MB of JSONB into memory on large databases.
+                kb_map = get_kb_user_map()
                 all_users = Users.get_users()["users"]
-                self._active_user_ids = {user.id for user in all_users}
+                self._active_user_ids = {str(user.id) for user in all_users}
                 self._active_kb_ids = {
-                    kb.id
-                    for kb in knowledge_bases
-                    if kb.user_id in self._active_user_ids
+                    kb_id
+                    for kb_id, uid in kb_map.items()
+                    if uid in self._active_user_ids
                 }
-                self._active_file_ids = get_active_file_ids(knowledge_bases, self._active_user_ids)
+                self._active_file_ids = get_active_file_ids(active_user_ids=self._active_user_ids)
 
                 orphaned_counts = count_orphaned_records(self.form_data, self._active_file_ids, self._active_user_ids)
 
@@ -683,48 +688,44 @@ class InteractivePruneUI:
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} inactive users")
 
-            # Stage 1: Old chats
+            # Stage 1: Old chats — stream IDs only to avoid loading full chat JSON
             if self.form_data.days is not None:
                 task = progress.add_task("Deleting old chats...", total=None)
                 cutoff_time = int(time.time()) - (self.form_data.days * 86400)
                 deleted = 0
 
                 with get_db() as db:
-                    for chat in Chats.get_chats(db=db):
-                        if chat.updated_at < cutoff_time:
-                            if self.form_data.exempt_archived_chats and chat.archived:
-                                continue
-                            if self.form_data.exempt_chats_in_folders and (
-                                getattr(chat, "folder_id", None) is not None
-                                or getattr(chat, "pinned", False)
-                            ):
-                                continue
-                            Chats.delete_chat_by_id(chat.id, db=db)
-                            deleted += 1
+                    conditions = Chat.updated_at < cutoff_time
+                    if self.form_data.exempt_archived_chats:
+                        conditions &= or_(Chat.archived == False, Chat.archived == None)
+                    if self.form_data.exempt_chats_in_folders:
+                        if hasattr(Chat, 'folder_id'):
+                            conditions &= Chat.folder_id == None
+                        if hasattr(Chat, 'pinned'):
+                            conditions &= or_(Chat.pinned == False, Chat.pinned == None)
+
+                    for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                        Chats.delete_chat_by_id(chat_id, db=db)
+                        deleted += 1
 
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} old chats")
 
             # Stage 2-3: Orphaned data
             task = progress.add_task("Building preservation set...", total=None)
-            active_user_ids = {user.id for user in Users.get_users()["users"]}
-            knowledge_bases = Knowledges.get_knowledge_bases()
-            active_kb_ids = {kb.id for kb in knowledge_bases if kb.user_id in active_user_ids}
-            active_file_ids = get_active_file_ids(knowledge_bases, active_user_ids)
+            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
+            kb_map = get_kb_user_map()
+            active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
-            # Delete orphaned files
+            # Delete orphaned files — stream id+user_id only, iterate directly
             task = progress.add_task("Deleting orphaned files...", total=None)
             deleted_files = 0
-            # Use shared database session for efficient bulk deletion
             with get_db() as db:
-                for file_record in Files.get_files(db=db):
-                    should_delete = (
-                        file_record.id not in active_file_ids
-                        or file_record.user_id not in active_user_ids
-                    )
-                    if should_delete:
-                        if safe_delete_file_by_id(file_record.id, self.vector_cleaner, db=db):
+                for fid, uid in stream_rows(db, File.id, File.user_id):
+                    if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+                        if safe_delete_file_by_id(fid, self.vector_cleaner, db=db):
                             deleted_files += 1
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_files} orphaned files")
@@ -736,21 +737,22 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for kb in Knowledges.get_knowledge_bases(db=db):
-                        if kb.user_id not in active_user_ids:
+                        if str(kb.user_id) not in active_user_ids:
                             self.vector_cleaner.delete_collection(kb.id)
                             Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned knowledge bases")
 
-            # Chats
+            # Chats — stream IDs + user_ids, filter via Python set membership
+            # to avoid SQLite's ~999 parameter limit with NOT IN clauses
             if self.form_data.delete_orphaned_chats:
                 task = progress.add_task("Deleting orphaned chats...", total=None)
                 deleted = 0
                 with get_db() as db:
-                    for chat in Chats.get_chats(db=db):
-                        if chat.user_id not in active_user_ids:
-                            Chats.delete_chat_by_id(chat.id, db=db)
+                    for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+                        if str(chat_uid) not in active_user_ids:
+                            Chats.delete_chat_by_id(chat_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chats")
@@ -761,7 +763,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for tool in Tools.get_tools(db=db):
-                        if tool.user_id not in active_user_ids:
+                        if str(tool.user_id) not in active_user_ids:
                             Tools.delete_tool_by_id(tool.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -773,7 +775,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for function in Functions.get_functions(db=db):
-                        if function.user_id not in active_user_ids:
+                        if str(function.user_id) not in active_user_ids:
                             Functions.delete_function_by_id(function.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -785,7 +787,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for prompt in Prompts.get_prompts(db=db):
-                        if prompt.user_id not in active_user_ids:
+                        if str(prompt.user_id) not in active_user_ids:
                             Prompts.delete_prompt_by_command(prompt.command, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -797,7 +799,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for model in Models.get_all_models(db=db):
-                        if model.user_id not in active_user_ids:
+                        if str(model.user_id) not in active_user_ids:
                             Models.delete_model_by_id(model.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -809,7 +811,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for note in Notes.get_notes(db=db):
-                        if note.user_id not in active_user_ids:
+                        if str(note.user_id) not in active_user_ids:
                             Notes.delete_note_by_id(note.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -821,7 +823,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for skill in Skills.get_skills(db=db):
-                        if skill.user_id not in active_user_ids:
+                        if str(skill.user_id) not in active_user_ids:
                             Skills.delete_skill_by_id(skill.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -833,7 +835,7 @@ class InteractivePruneUI:
                 deleted = 0
                 with get_db() as db:
                     for folder in self._get_all_folders_safe(db=db):
-                        if folder.user_id not in active_user_ids:
+                        if str(folder.user_id) not in active_user_ids:
                             Folders.delete_folder_by_id_and_user_id(folder.id, folder.user_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -846,19 +848,26 @@ class InteractivePruneUI:
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chat messages")
 
-            # Stage 4: Cleanup physical files
+            # Stage 4: Cleanup physical files and vector collections.
+            # Recompute preservation sets after Stage 3 deletions — files that
+            # were only referenced by now-deleted chats/KBs should no longer
+            # be considered active.  This is safe with the streaming-based
+            # get_active_file_ids() that replaced the OOM-prone ORM version.
+            task = progress.add_task("Recomputing preservation sets...", total=None)
+            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
+            kb_map = get_kb_user_map()
+            active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+            progress.update(task, completed=True)
+
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
-            final_active_user_ids = {user.id for user in Users.get_users()["users"]}
-            final_knowledge_bases = Knowledges.get_knowledge_bases()
-            final_active_kb_ids = {kb.id for kb in final_knowledge_bases if kb.user_id in final_active_user_ids}
-            final_active_file_ids = get_active_file_ids(final_knowledge_bases, final_active_user_ids)
-            deleted_uploads = cleanup_orphaned_uploads(final_active_file_ids)
+            deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_uploads} orphaned upload files")
 
             task = progress.add_task("Cleaning up vector collections...", total=None)
             deleted_vector, error = self.vector_cleaner.cleanup_orphaned_collections(
-                final_active_file_ids, final_active_kb_ids, final_active_user_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_vector} orphaned vector collections")

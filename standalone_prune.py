@@ -44,19 +44,21 @@ try:
         count_orphaned_uploads,
         count_audio_cache_files,
         get_active_file_ids,
+        get_kb_user_map,
         get_all_folders,
         safe_delete_file_by_id,
         cleanup_orphaned_uploads,
         delete_inactive_users,
         cleanup_audio_cache,
         delete_orphaned_chat_messages,
+        stream_rows,
     )
     from prune_imports import (
-        Users, Chats, Files, Notes, Prompts, Models, Knowledges, Functions,
+        Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
     )
-    from sqlalchemy import text
+    from sqlalchemy import text, or_
     import time
     import sqlite3
 except ImportError as e:
@@ -488,15 +490,15 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Starting data pruning preview (dry run)")
 
             # Get counts for all enabled operations
-            knowledge_bases = Knowledges.get_knowledge_bases()
+            kb_map = get_kb_user_map()
             all_users = Users.get_users()["users"]
-            active_user_ids = {user.id for user in all_users}
+            active_user_ids = {str(user.id) for user in all_users}
             active_kb_ids = {
-                kb.id
-                for kb in knowledge_bases
-                if kb.user_id in active_user_ids
+                kb_id
+                for kb_id, uid in kb_map.items()
+                if uid in active_user_ids
             }
-            active_file_ids = get_active_file_ids(knowledge_bases, active_user_ids)
+            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
 
             orphaned_counts = count_orphaned_records(form_data, active_file_ids, active_user_ids)
 
@@ -579,29 +581,26 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         else:
             log.info("Skipping inactive user deletion (disabled)")
 
-        # Stage 1: Delete old chats based on user criteria
+        # Stage 1: Delete old chats — stream IDs only to avoid loading full chat JSON
         if form_data.days is not None:
             cutoff_time = int(time.time()) - (form_data.days * 86400)
-            chats_to_delete = []
 
             with get_db() as db:
-                for chat in Chats.get_chats(db=db):
-                    if chat.updated_at < cutoff_time:
-                        if form_data.exempt_archived_chats and chat.archived:
-                            continue
-                        if form_data.exempt_chats_in_folders and (
-                            getattr(chat, "folder_id", None) is not None
-                            or getattr(chat, "pinned", False)
-                        ):
-                            continue
-                        chats_to_delete.append(chat)
+                conditions = Chat.updated_at < cutoff_time
+                if form_data.exempt_archived_chats:
+                    conditions &= or_(Chat.archived == False, Chat.archived == None)
+                if form_data.exempt_chats_in_folders:
+                    if hasattr(Chat, 'folder_id'):
+                        conditions &= Chat.folder_id == None
+                    if hasattr(Chat, 'pinned'):
+                        conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
-                if chats_to_delete:
-                    log.info(
-                        f"Deleting {len(chats_to_delete)} old chats (older than {form_data.days} days)"
-                    )
-                    for chat in chats_to_delete:
-                        Chats.delete_chat_by_id(chat.id, db=db)
+                deleted = 0
+                for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                    Chats.delete_chat_by_id(chat_id, db=db)
+                    deleted += 1
+                if deleted > 0:
+                    log.info(f"Deleting {deleted} old chats (older than {form_data.days} days)")
                 else:
                     log.info(f"No chats found older than {form_data.days} days")
         else:
@@ -610,34 +609,25 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # Stage 2: Build preservation set
         log.info("Building preservation set")
 
-        active_user_ids = {user.id for user in Users.get_users()["users"]}
+        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
         log.info(f"Found {len(active_user_ids)} active users")
 
-        active_kb_ids = set()
-        knowledge_bases = Knowledges.get_knowledge_bases()
-
-        for kb in knowledge_bases:
-            if kb.user_id in active_user_ids:
-                active_kb_ids.add(kb.id)
-
+        kb_map = get_kb_user_map()
+        active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
         log.info(f"Found {len(active_kb_ids)} active knowledge bases")
 
-        active_file_ids = get_active_file_ids(knowledge_bases, active_user_ids)
+        active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
 
         # Stage 3: Delete orphaned database records
         log.info("Deleting orphaned database records")
 
         deleted_files = 0
-        # Use shared database session for efficient bulk deletion
+        # Stream id+user_id only, iterate directly — keyset pagination uses
+        # fresh queries per batch, so deletions don't disrupt iteration
         with get_db() as db:
-            for file_record in Files.get_files(db=db):
-                should_delete = (
-                    file_record.id not in active_file_ids
-                    or file_record.user_id not in active_user_ids
-                )
-
-                if should_delete:
-                    if safe_delete_file_by_id(file_record.id, vector_cleaner, db=db):
+            for fid, uid in stream_rows(db, File.id, File.user_id):
+                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+                    if safe_delete_file_by_id(fid, vector_cleaner, db=db):
                         deleted_files += 1
 
         if deleted_files > 0:
@@ -647,7 +637,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         if form_data.delete_orphaned_knowledge_bases:
             with get_db() as db:
                 for kb in Knowledges.get_knowledge_bases(db=db):
-                    if kb.user_id not in active_user_ids:
+                    if str(kb.user_id) not in active_user_ids:
                         if vector_cleaner.delete_collection(kb.id):
                             Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted_kbs += 1
@@ -659,12 +649,14 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         deleted_others = 0
 
+        # Chats — stream IDs + user_ids, filter via Python set membership
+        # to avoid SQLite's ~999 parameter limit with NOT IN clauses
         if form_data.delete_orphaned_chats:
             chats_deleted = 0
             with get_db() as db:
-                for chat in Chats.get_chats(db=db):
-                    if chat.user_id not in active_user_ids:
-                        Chats.delete_chat_by_id(chat.id, db=db)
+                for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+                    if str(chat_uid) not in active_user_ids:
+                        Chats.delete_chat_by_id(chat_id, db=db)
                         chats_deleted += 1
                         deleted_others += 1
             if chats_deleted > 0:
@@ -676,7 +668,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             tools_deleted = 0
             with get_db() as db:
                 for tool in Tools.get_tools(db=db):
-                    if tool.user_id not in active_user_ids:
+                    if str(tool.user_id) not in active_user_ids:
                         Tools.delete_tool_by_id(tool.id, db=db)
                         tools_deleted += 1
                         deleted_others += 1
@@ -689,7 +681,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             functions_deleted = 0
             with get_db() as db:
                 for function in Functions.get_functions(db=db):
-                    if function.user_id not in active_user_ids:
+                    if str(function.user_id) not in active_user_ids:
                         Functions.delete_function_by_id(function.id, db=db)
                         functions_deleted += 1
                         deleted_others += 1
@@ -702,7 +694,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             notes_deleted = 0
             with get_db() as db:
                 for note in Notes.get_notes(db=db):
-                    if note.user_id not in active_user_ids:
+                    if str(note.user_id) not in active_user_ids:
                         Notes.delete_note_by_id(note.id, db=db)
                         notes_deleted += 1
                         deleted_others += 1
@@ -715,7 +707,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             skills_deleted = 0
             with get_db() as db:
                 for skill in Skills.get_skills(db=db):
-                    if skill.user_id not in active_user_ids:
+                    if str(skill.user_id) not in active_user_ids:
                         Skills.delete_skill_by_id(skill.id, db=db)
                         skills_deleted += 1
                         deleted_others += 1
@@ -728,7 +720,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             prompts_deleted = 0
             with get_db() as db:
                 for prompt in Prompts.get_prompts(db=db):
-                    if prompt.user_id not in active_user_ids:
+                    if str(prompt.user_id) not in active_user_ids:
                         Prompts.delete_prompt_by_command(prompt.command, db=db)
                         prompts_deleted += 1
                         deleted_others += 1
@@ -741,7 +733,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             models_deleted = 0
             with get_db() as db:
                 for model in Models.get_all_models(db=db):
-                    if model.user_id not in active_user_ids:
+                    if str(model.user_id) not in active_user_ids:
                         Models.delete_model_by_id(model.id, db=db)
                         models_deleted += 1
                         deleted_others += 1
@@ -754,7 +746,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             folders_deleted = 0
             with get_db() as db:
                 for folder in get_all_folders(db=db):
-                    if folder.user_id not in active_user_ids:
+                    if str(folder.user_id) not in active_user_ids:
                         Folders.delete_folder_by_id_and_user_id(
                             folder.id, folder.user_id, db=db
                         )
@@ -776,15 +768,20 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         else:
             log.info("Skipping orphaned chat_message deletion (disabled)")
 
-        # Stage 4: Clean up orphaned physical files
+        # Stage 4: Clean up orphaned physical files and vector collections.
+        # Recompute preservation sets after Stage 3 deletions — files that
+        # were only referenced by now-deleted chats/KBs should no longer
+        # be considered active.  This is safe with the streaming-based
+        # get_active_file_ids() that replaced the OOM-prone ORM version.
+        log.info("Recomputing preservation sets after deletions")
+        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
+        kb_map = get_kb_user_map()
+        active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+        active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+
         log.info("Cleaning up orphaned physical files")
 
-        final_active_user_ids = {user.id for user in Users.get_users()["users"]}
-        final_knowledge_bases = Knowledges.get_knowledge_bases()
-        final_active_kb_ids = {kb.id for kb in final_knowledge_bases if kb.user_id in final_active_user_ids}
-        final_active_file_ids = get_active_file_ids(final_knowledge_bases, final_active_user_ids)
-
-        deleted_uploads = cleanup_orphaned_uploads(final_active_file_ids)
+        deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
         if deleted_uploads > 0:
             log.info(f"Deleted {deleted_uploads} orphaned upload files")
 
@@ -796,7 +793,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # Use modular vector database cleanup
         warnings = []
         deleted_vector_count, vector_error = vector_cleaner.cleanup_orphaned_collections(
-            final_active_file_ids, final_active_kb_ids, final_active_user_ids
+            active_file_ids, active_kb_ids, active_user_ids
         )
         if vector_error:
             warnings.append(f"Vector cleanup warning: {vector_error}")
