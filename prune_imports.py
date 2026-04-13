@@ -116,7 +116,10 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.tools import Tool, Tools
     from open_webui.models.skills import Skill, Skills
     from open_webui.models.folders import Folder, Folders, FolderModel
-    from open_webui.internal.db import get_db, get_db_context
+    from open_webui.internal.db import get_async_db, get_async_db_context
+    # Sync engine — used exclusively for VACUUM (a DDL command that cannot
+    # run inside an async transaction).  Aliased to avoid confusion.
+    from open_webui.internal.db import engine as sync_engine
     from open_webui.config import CACHE_DIR
     from open_webui.storage.provider import Storage
 
@@ -154,7 +157,10 @@ elif _import_strategy == "git":
     from backend.open_webui.models.tools import Tool, Tools
     from backend.open_webui.models.skills import Skill, Skills
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
-    from backend.open_webui.internal.db import get_db, get_db_context
+    from backend.open_webui.internal.db import get_async_db, get_async_db_context
+    # Sync engine — used exclusively for VACUUM (a DDL command that cannot
+    # run inside an async transaction).  Aliased to avoid confusion.
+    from backend.open_webui.internal.db import engine as sync_engine
     from backend.open_webui.config import CACHE_DIR
     from backend.open_webui.storage.provider import Storage
 
@@ -210,8 +216,9 @@ __all__ = [
     'Folders',
     'FolderModel',
     'Storage',
-    'get_db',
-    'get_db_context',
+    'get_async_db',
+    'get_async_db_context',
+    'sync_engine',
     'CACHE_DIR',
     'VECTOR_DB_CLIENT',
     'VECTOR_DB',

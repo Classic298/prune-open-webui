@@ -17,6 +17,7 @@ Requirements:
     - Requires same Python dependencies as Open WebUI backend
 """
 
+import asyncio
 import sys
 import os
 import argparse
@@ -57,9 +58,15 @@ try:
     )
     from prune_imports import (
         Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Skills, Folders, get_db, VECTOR_DB, VECTOR_DB_CLIENT, CACHE_DIR,
-        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
+        Tools, Skills, Folders, get_async_db, CACHE_DIR,
+        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE,
+        sync_engine,
     )
+    try:
+        from prune_imports import VECTOR_DB, VECTOR_DB_CLIENT
+    except ImportError:
+        VECTOR_DB = None
+        VECTOR_DB_CLIENT = None
     from sqlalchemy import text, or_
     import time
     import sqlite3
@@ -294,18 +301,6 @@ Safety Features:
         dest='delete_orphaned_chat_messages',
         help='Skip orphaned chat_message deletion'
     )
-    parser.add_argument(
-        '--delete-orphaned-automations',
-        action='store_true',
-        default=True,
-        help='Delete orphaned automations from deleted users (default: True)'
-    )
-    parser.add_argument(
-        '--no-delete-orphaned-automations',
-        action='store_false',
-        dest='delete_orphaned_automations',
-        help='Skip orphaned automation and automation_run deletion'
-    )
 
     # Audio cache cleanup
     parser.add_argument(
@@ -393,7 +388,6 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_notes=args.delete_orphaned_notes,
         delete_orphaned_folders=args.delete_orphaned_folders,
         delete_orphaned_chat_messages=args.delete_orphaned_chat_messages,
-        delete_orphaned_automations=args.delete_orphaned_automations,
         audio_cache_max_age_days=args.audio_cache_max_age_days,
         delete_inactive_users_days=args.delete_inactive_users_days,
         exempt_admin_users=args.exempt_admin_users,
@@ -453,15 +447,6 @@ def print_preview_results(result: PrunePreviewResult):
             print(f"   {result.orphaned_skills} orphaned skills")
         total_items += workspace_total
 
-    automation_total = result.orphaned_automations + result.orphaned_automation_runs
-    if automation_total > 0:
-        print(f"\n⚙️ Automations:")
-        if result.orphaned_automations > 0:
-            print(f"   {result.orphaned_automations} orphaned automations")
-        if result.orphaned_automation_runs > 0:
-            print(f"   {result.orphaned_automation_runs} orphaned automation runs")
-        total_items += automation_total
-
     if result.orphaned_folders > 0:
         print(f"\n📂 Folders:")
         print(f"   {result.orphaned_folders} orphaned folders")
@@ -492,7 +477,7 @@ def print_preview_results(result: PrunePreviewResult):
     print()
 
 
-def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
+async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
     """
     Execute the prune operation with the given configuration.
     This replicates the logic from prune.py's prune_data function.
@@ -514,26 +499,26 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Starting data pruning preview (dry run)")
 
             # Get counts for all enabled operations
-            kb_map = get_kb_user_map()
-            all_users = Users.get_users()["users"]
+            kb_map = await get_kb_user_map()
+            all_users = (await Users.get_users())["users"]
             active_user_ids = {str(user.id) for user in all_users}
             active_kb_ids = {
                 kb_id
                 for kb_id, uid in kb_map.items()
                 if uid in active_user_ids
             }
-            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
 
-            orphaned_counts = count_orphaned_records(form_data, active_file_ids, active_user_ids)
+            orphaned_counts = await count_orphaned_records(form_data, active_file_ids, active_user_ids)
 
             result = PrunePreviewResult(
-                inactive_users=count_inactive_users(
+                inactive_users=await count_inactive_users(
                     form_data.delete_inactive_users_days,
                     form_data.exempt_admin_users,
                     form_data.exempt_pending_users,
                     all_users,
                 ),
-                old_chats=count_old_chats(
+                old_chats=await count_old_chats(
                     form_data.days,
                     form_data.exempt_archived_chats,
                     form_data.exempt_chats_in_folders,
@@ -556,8 +541,6 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     form_data.audio_cache_max_age_days
                 ),
                 orphaned_chat_messages=orphaned_counts["chat_messages"],
-                orphaned_automations=orphaned_counts["automations"],
-                orphaned_automation_runs=orphaned_counts["automation_runs"],
             )
 
             log.info("Data pruning preview completed")
@@ -580,7 +563,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     f"Exporting {result.total_items()} items (~{estimated_human}) "
                     f"to {export_preview_path}"
                 )
-                rows = exporter.export(Path(export_preview_path), result)
+                rows = await exporter.export(Path(export_preview_path), result)
                 log.info(f"Exported {rows} rows to {export_preview_path}")
 
             return True
@@ -594,7 +577,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info(
                 f"Deleting users inactive for more than {form_data.delete_inactive_users_days} days"
             )
-            deleted_users = delete_inactive_users(
+            deleted_users = await delete_inactive_users(
                 form_data.delete_inactive_users_days,
                 vector_cleaner,
                 form_data.exempt_admin_users,
@@ -611,7 +594,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         if form_data.days is not None:
             cutoff_time = int(time.time()) - (form_data.days * 86400)
 
-            with get_db() as db:
+            async with get_async_db() as db:
                 conditions = Chat.updated_at < cutoff_time
                 if form_data.exempt_archived_chats:
                     conditions &= or_(Chat.archived == False, Chat.archived == None)
@@ -622,8 +605,8 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                         conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
                 deleted = 0
-                for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
-                    Chats.delete_chat_by_id(chat_id, db=db)
+                async for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                    await Chats.delete_chat_by_id(chat_id, db=db)
                     deleted += 1
                 if deleted > 0:
                     log.info(f"Deleting {deleted} old chats (older than {form_data.days} days)")
@@ -635,14 +618,14 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # Stage 2: Build preservation set
         log.info("Building preservation set")
 
-        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
+        active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
         log.info(f"Found {len(active_user_ids)} active users")
 
-        kb_map = get_kb_user_map()
+        kb_map = await get_kb_user_map()
         active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
         log.info(f"Found {len(active_kb_ids)} active knowledge bases")
 
-        active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+        active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
 
         # Stage 3: Delete orphaned database records
         log.info("Deleting orphaned database records")
@@ -650,10 +633,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         deleted_files = 0
         # Stream id+user_id only, iterate directly — keyset pagination uses
         # fresh queries per batch, so deletions don't disrupt iteration
-        with get_db() as db:
-            for fid, uid in stream_rows(db, File.id, File.user_id):
+        async with get_async_db() as db:
+            async for fid, uid in stream_rows(db, File.id, File.user_id):
                 if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
-                    if safe_delete_file_by_id(fid, vector_cleaner, db=db):
+                    if await safe_delete_file_by_id(fid, vector_cleaner, db=db):
                         deleted_files += 1
 
         if deleted_files > 0:
@@ -661,11 +644,11 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         deleted_kbs = 0
         if form_data.delete_orphaned_knowledge_bases:
-            with get_db() as db:
-                for kb in Knowledges.get_knowledge_bases(db=db):
+            async with get_async_db() as db:
+                for kb in await Knowledges.get_knowledge_bases(db=db):
                     if str(kb.user_id) not in active_user_ids:
                         if vector_cleaner.delete_collection(kb.id):
-                            Knowledges.delete_knowledge_by_id(kb.id, db=db)
+                            await Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted_kbs += 1
 
             if deleted_kbs > 0:
@@ -679,10 +662,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # to avoid SQLite's ~999 parameter limit with NOT IN clauses
         if form_data.delete_orphaned_chats:
             chats_deleted = 0
-            with get_db() as db:
-                for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+            async with get_async_db() as db:
+                async for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
                     if str(chat_uid) not in active_user_ids:
-                        Chats.delete_chat_by_id(chat_id, db=db)
+                        await Chats.delete_chat_by_id(chat_id, db=db)
                         chats_deleted += 1
                         deleted_others += 1
             if chats_deleted > 0:
@@ -692,10 +675,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_tools:
             tools_deleted = 0
-            with get_db() as db:
-                for tool in Tools.get_tools(db=db):
+            async with get_async_db() as db:
+                for tool in await Tools.get_tools(db=db):
                     if str(tool.user_id) not in active_user_ids:
-                        Tools.delete_tool_by_id(tool.id, db=db)
+                        await Tools.delete_tool_by_id(tool.id, db=db)
                         tools_deleted += 1
                         deleted_others += 1
             if tools_deleted > 0:
@@ -705,10 +688,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_functions:
             functions_deleted = 0
-            with get_db() as db:
-                for function in Functions.get_functions(db=db):
+            async with get_async_db() as db:
+                for function in await Functions.get_functions(db=db):
                     if str(function.user_id) not in active_user_ids:
-                        Functions.delete_function_by_id(function.id, db=db)
+                        await Functions.delete_function_by_id(function.id, db=db)
                         functions_deleted += 1
                         deleted_others += 1
             if functions_deleted > 0:
@@ -718,10 +701,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_notes:
             notes_deleted = 0
-            with get_db() as db:
-                for note in Notes.get_notes(db=db):
+            async with get_async_db() as db:
+                for note in await Notes.get_notes(db=db):
                     if str(note.user_id) not in active_user_ids:
-                        Notes.delete_note_by_id(note.id, db=db)
+                        await Notes.delete_note_by_id(note.id, db=db)
                         notes_deleted += 1
                         deleted_others += 1
             if notes_deleted > 0:
@@ -731,10 +714,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_skills:
             skills_deleted = 0
-            with get_db() as db:
-                for skill in Skills.get_skills(db=db):
+            async with get_async_db() as db:
+                for skill in await Skills.get_skills(db=db):
                     if str(skill.user_id) not in active_user_ids:
-                        Skills.delete_skill_by_id(skill.id, db=db)
+                        await Skills.delete_skill_by_id(skill.id, db=db)
                         skills_deleted += 1
                         deleted_others += 1
             if skills_deleted > 0:
@@ -744,10 +727,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_prompts:
             prompts_deleted = 0
-            with get_db() as db:
-                for prompt in Prompts.get_prompts(db=db):
+            async with get_async_db() as db:
+                for prompt in await Prompts.get_prompts(db=db):
                     if str(prompt.user_id) not in active_user_ids:
-                        Prompts.delete_prompt_by_command(prompt.command, db=db)
+                        await Prompts.delete_prompt_by_command(prompt.command, db=db)
                         prompts_deleted += 1
                         deleted_others += 1
             if prompts_deleted > 0:
@@ -757,10 +740,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_models:
             models_deleted = 0
-            with get_db() as db:
-                for model in Models.get_all_models(db=db):
+            async with get_async_db() as db:
+                for model in await Models.get_all_models(db=db):
                     if str(model.user_id) not in active_user_ids:
-                        Models.delete_model_by_id(model.id, db=db)
+                        await Models.delete_model_by_id(model.id, db=db)
                         models_deleted += 1
                         deleted_others += 1
             if models_deleted > 0:
@@ -770,10 +753,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         if form_data.delete_orphaned_folders:
             folders_deleted = 0
-            with get_db() as db:
-                for folder in get_all_folders(db=db):
+            async with get_async_db() as db:
+                for folder in await get_all_folders(db=db):
                     if str(folder.user_id) not in active_user_ids:
-                        Folders.delete_folder_by_id_and_user_id(
+                        await Folders.delete_folder_by_id_and_user_id(
                             folder.id, folder.user_id, db=db
                         )
                         folders_deleted += 1
@@ -788,7 +771,7 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         # Stage 3b: Delete orphaned chat messages
         if form_data.delete_orphaned_chat_messages:
-            deleted_chat_messages = delete_orphaned_chat_messages()
+            deleted_chat_messages = await delete_orphaned_chat_messages()
             if deleted_chat_messages > 0:
                 log.info(f"Deleted {deleted_chat_messages} orphaned chat messages")
         else:
@@ -796,11 +779,11 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         # Stage 3c: Delete orphaned automations and automation runs
         if form_data.delete_orphaned_automations:
-            deleted_automations = delete_orphaned_automations(active_user_ids)
+            deleted_automations = await delete_orphaned_automations(active_user_ids)
             if deleted_automations > 0:
                 log.info(f"Deleted {deleted_automations} orphaned automations")
 
-            deleted_automation_runs = delete_orphaned_automation_runs()
+            deleted_automation_runs = await delete_orphaned_automation_runs()
             if deleted_automation_runs > 0:
                 log.info(f"Deleted {deleted_automation_runs} orphaned automation runs")
         else:
@@ -812,10 +795,10 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # be considered active.  This is safe with the streaming-based
         # get_active_file_ids() that replaced the OOM-prone ORM version.
         log.info("Recomputing preservation sets after deletions")
-        active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
-        kb_map = get_kb_user_map()
+        active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
+        kb_map = await get_kb_user_map()
         active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
-        active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+        active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
 
         log.info("Cleaning up orphaned physical files")
 
@@ -838,30 +821,35 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.warning(f"Vector cleanup completed with errors: {vector_error}")
 
         # Stage 5: Database optimization (optional)
+        #
+        # VACUUM is a DDL/maintenance command that CANNOT run inside a
+        # transaction.  The async engine always opens a transaction, so we
+        # use the sync engine directly with a raw DBAPI connection in
+        # autocommit mode.  The sync engine is retained by Open WebUI
+        # specifically for startup and maintenance tasks.
         if form_data.run_vacuum:
             log.info("Optimizing database with VACUUM (this may take a while and lock the database)")
 
             try:
-                with get_db() as db:
-                    engine = db.get_bind()
-                    db_url = str(engine.url)
-
+                db_url = str(sync_engine.url)
+                raw_conn = sync_engine.raw_connection()
+                try:
                     if 'postgresql' in db_url:
-                        # PostgreSQL: VACUUM requires autocommit mode (no transaction)
-                        raw_connection = engine.raw_connection()
-                        try:
-                            raw_connection.set_isolation_level(0)  # AUTOCOMMIT mode
-                            cursor = raw_connection.cursor()
-                            cursor.execute("VACUUM ANALYZE")
-                            cursor.close()
-                            raw_connection.commit()
-                            log.info("Vacuumed PostgreSQL main database")
-                        finally:
-                            raw_connection.close()
+                        # PostgreSQL: VACUUM requires AUTOCOMMIT isolation
+                        raw_conn.set_isolation_level(0)
+                        cursor = raw_conn.cursor()
+                        cursor.execute("VACUUM ANALYZE")
+                        cursor.close()
+                        log.info("Vacuumed PostgreSQL main database")
                     else:
-                        # SQLite: Can run in transaction
-                        db.execute(text("VACUUM"))
-                        log.info("Vacuumed main database")
+                        # SQLite: VACUUM cannot run inside BEGIN/COMMIT.
+                        # raw_connection() from the pool may have an implicit
+                        # transaction; isolation_level = None gives autocommit.
+                        raw_conn.isolation_level = None
+                        raw_conn.execute("VACUUM")
+                        log.info("Vacuumed SQLite main database")
+                finally:
+                    raw_conn.close()
             except Exception as e:
                 log.error(f"Failed to vacuum main database: {e}")
 
@@ -878,19 +866,18 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 and vector_cleaner.session
             ):
                 try:
-                    engine = vector_cleaner.session.get_bind()
-                    raw_connection = engine.raw_connection()
+                    pg_engine = vector_cleaner.session.get_bind()
+                    pg_raw_conn = pg_engine.raw_connection()
                     try:
-                        raw_connection.set_isolation_level(0)  # AUTOCOMMIT mode
-                        cursor = raw_connection.cursor()
+                        pg_raw_conn.set_isolation_level(0)  # AUTOCOMMIT
+                        cursor = pg_raw_conn.cursor()
                         cursor.execute("VACUUM ANALYZE")
                         cursor.close()
-                        raw_connection.commit()
-                        log.info("Executed VACUUM ANALYZE on PostgreSQL database")
+                        log.info("Executed VACUUM ANALYZE on PostgreSQL vector database")
                     finally:
-                        raw_connection.close()
+                        pg_raw_conn.close()
                 except Exception as e:
-                    log.error(f"Failed to vacuum PostgreSQL database: {e}")
+                    log.error(f"Failed to vacuum PostgreSQL vector database: {e}")
         else:
             log.info("Skipping VACUUM optimization (not enabled)")
 
@@ -909,8 +896,8 @@ def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         PruneLock.release()
 
 
-def main():
-    """Main entry point for standalone prune script."""
+async def async_main():
+    """Async main entry point for standalone prune script."""
     args = parse_arguments()
     configure_logging(args.verbose, args.quiet)
 
@@ -923,7 +910,7 @@ def main():
 
     # Check if we can access database
     try:
-        users = Users.get_users()
+        users = await Users.get_users()
         log.info(f"✓ Database connection successful ({len(users['users'])} users found)")
     except Exception as e:
         log.error(f"✗ Failed to connect to database: {e}")
@@ -974,7 +961,7 @@ def main():
     log.info("")
 
     # Run the prune operation
-    success = run_prune(form_data, export_preview_path=args.export_preview)
+    success = await run_prune(form_data, export_preview_path=args.export_preview)
 
     if success:
         log.info("\n✓ Prune operation completed successfully")
@@ -982,6 +969,11 @@ def main():
     else:
         log.error("\n✗ Prune operation failed")
         return 1
+
+
+def main():
+    """Synchronous wrapper that runs the async main via asyncio."""
+    return asyncio.run(async_main())
 
 
 if __name__ == "__main__":

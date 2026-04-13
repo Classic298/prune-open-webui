@@ -60,6 +60,10 @@ It runs independently of the web server and can be scheduled for automated maint
 - Admin user protection
 - Detailed logging of all operations
 
+### Known Limitations
+
+- **Channels are not pruned.** The tool does not delete or clean up channels or channel messages. There has been no demand for this feature so far. If you need it, feel free to open a discussion.
+
 ### Compatibility
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for the full version compatibility matrix.
