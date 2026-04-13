@@ -376,10 +376,9 @@ async def count_orphaned_records(
                             all_auto_ids.add(aid)
 
                         orphaned_run_count = 0
-                        async for run_auto_id in stream_rows(
-                            db, AutomationRun.automation_id
+                        async for _, parent_id in stream_rows(
+                            db, AutomationRun.id, AutomationRun.automation_id
                         ):
-                            parent_id = run_auto_id[0]
                             if (
                                 parent_id is None
                                 or parent_id not in all_auto_ids
