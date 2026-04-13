@@ -563,6 +563,8 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     form_data.audio_cache_max_age_days
                 ),
                 orphaned_chat_messages=orphaned_counts["chat_messages"],
+                orphaned_automations=orphaned_counts["automations"],
+                orphaned_automation_runs=orphaned_counts["automation_runs"],
             )
 
             log.info("Data pruning preview completed")

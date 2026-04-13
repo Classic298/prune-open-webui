@@ -364,23 +364,29 @@ async def count_orphaned_records(
                 # Count orphaned automation_runs: runs whose parent automation
                 # no longer exists OR whose parent will be deleted as orphaned.
                 # This ensures preview totals match what execution will delete.
+                #
+                # We stream run IDs and check set membership in Python to
+                # avoid SQLite's ~999 parameter limit on large instances.
                 if AutomationRun is not None:
                     try:
-                        result = await db.execute(
-                            select(func.count(AutomationRun.id)).where(
-                                or_(
-                                    AutomationRun.automation_id.is_(None),
-                                    not_(AutomationRun.automation_id.in_(
-                                        select(Automation.id)
-                                    )),
-                                    *(
-                                        [AutomationRun.automation_id.in_(orphaned_auto_ids)]
-                                        if orphaned_auto_ids else []
-                                    ),
-                                )
-                            )
-                        )
-                        counts["automation_runs"] = result.scalar_one_or_none() or 0
+                        # Build the set of all existing automation IDs for
+                        # fast "parent still exists?" lookups.
+                        all_auto_ids = set()
+                        async for (aid,) in stream_rows(db, Automation.id):
+                            all_auto_ids.add(aid)
+
+                        orphaned_run_count = 0
+                        async for run_auto_id in stream_rows(
+                            db, AutomationRun.automation_id
+                        ):
+                            parent_id = run_auto_id[0]
+                            if (
+                                parent_id is None
+                                or parent_id not in all_auto_ids
+                                or parent_id in orphaned_auto_ids
+                            ):
+                                orphaned_run_count += 1
+                        counts["automation_runs"] = orphaned_run_count
                     except _TABLE_MISSING_ERRORS as e:
                         if _is_table_missing_error(e):
                             log.debug(f"automation_run table does not exist: {e}")
