@@ -347,9 +347,14 @@ async def count_orphaned_records(
                 try:
                     orphaned_auto_count = 0
                     orphaned_auto_ids = set()
+                    # Also build the full set of automation IDs during this
+                    # scan to reuse for orphaned-run counting below, avoiding
+                    # a redundant second table scan.
+                    all_auto_ids = set()
                     async for auto_id, auto_uid in stream_rows(
                         db, Automation.id, Automation.user_id
                     ):
+                        all_auto_ids.add(auto_id)
                         if str(auto_uid) not in active_user_ids:
                             orphaned_auto_count += 1
                             orphaned_auto_ids.add(auto_id)
@@ -358,6 +363,7 @@ async def count_orphaned_records(
                     if _is_table_missing_error(e):
                         log.debug(f"automation table does not exist: {e}")
                         orphaned_auto_ids = set()
+                        all_auto_ids = set()
                     else:
                         raise
 
@@ -369,12 +375,6 @@ async def count_orphaned_records(
                 # avoid SQLite's ~999 parameter limit on large instances.
                 if AutomationRun is not None:
                     try:
-                        # Build the set of all existing automation IDs for
-                        # fast "parent still exists?" lookups.
-                        all_auto_ids = set()
-                        async for (aid,) in stream_rows(db, Automation.id):
-                            all_auto_ids.add(aid)
-
                         orphaned_run_count = 0
                         async for _, parent_id in stream_rows(
                             db, AutomationRun.id, AutomationRun.automation_id

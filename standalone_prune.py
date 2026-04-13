@@ -60,7 +60,7 @@ try:
         Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_async_db, CACHE_DIR,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE,
-        sync_engine,
+        get_sync_engine,
     )
     try:
         from prune_imports import VECTOR_DB, VECTOR_DB_CLIENT
@@ -855,13 +855,14 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Optimizing database with VACUUM (this may take a while and lock the database)")
 
             try:
-                # Use the public engine.connect() API with a per-connection
-                # isolation level override.  This avoids touching pool
-                # internals and is stable across SQLAlchemy versions.
-                with sync_engine.connect().execution_options(
+                # Resolve the sync engine lazily — only needed for VACUUM,
+                # so non-VACUUM operations remain usable if the symbol
+                # is unavailable in a given Open WebUI build.
+                engine = get_sync_engine()
+                with engine.connect().execution_options(
                     isolation_level="AUTOCOMMIT"
                 ) as conn:
-                    if 'postgresql' in str(sync_engine.url):
+                    if 'postgresql' in str(engine.url):
                         conn.execute(text("VACUUM ANALYZE"))
                         log.info("Vacuumed PostgreSQL main database")
                     else:

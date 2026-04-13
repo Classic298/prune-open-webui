@@ -62,7 +62,7 @@ try:
         Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
         Tools, Skills, Folders, get_async_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
         ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE,
-        sync_engine,
+        get_sync_engine,
     )
     import time
     import sqlite3
@@ -904,13 +904,14 @@ class InteractivePruneUI:
             if self.form_data.run_vacuum:
                 task = progress.add_task("Running VACUUM (this may take a while)...", total=None)
                 try:
-                    # Use the public engine.connect() API with a per-connection
-                    # isolation level override.  This avoids touching pool
-                    # internals and is stable across SQLAlchemy versions.
-                    with sync_engine.connect().execution_options(
+                    # Resolve the sync engine lazily — only needed for VACUUM,
+                    # so non-VACUUM operations remain usable if the symbol
+                    # is unavailable in a given Open WebUI build.
+                    engine = get_sync_engine()
+                    with engine.connect().execution_options(
                         isolation_level="AUTOCOMMIT"
                     ) as conn:
-                        if 'postgresql' in str(sync_engine.url):
+                        if 'postgresql' in str(engine.url):
                             conn.execute(text("VACUUM ANALYZE"))
                             console.print("[green]✓[/green] Vacuumed PostgreSQL main database")
                         else:
