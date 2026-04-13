@@ -904,29 +904,18 @@ class InteractivePruneUI:
             if self.form_data.run_vacuum:
                 task = progress.add_task("Running VACUUM (this may take a while)...", total=None)
                 try:
-                    db_url = str(sync_engine.url)
-                    # Get a raw connection and explicitly detach it from the
-                    # pool after VACUUM so the altered autocommit/isolation
-                    # state is never returned and reused.
-                    pool_conn = sync_engine.pool.connect()
-                    raw_conn = pool_conn.dbapi_connection
-                    try:
-                        if 'postgresql' in db_url:
-                            raw_conn.set_isolation_level(0)  # AUTOCOMMIT
-                            cursor = raw_conn.cursor()
-                            cursor.execute("VACUUM ANALYZE")
-                            cursor.close()
+                    # Use the public engine.connect() API with a per-connection
+                    # isolation level override.  This avoids touching pool
+                    # internals and is stable across SQLAlchemy versions.
+                    with sync_engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT"
+                    ) as conn:
+                        if 'postgresql' in str(sync_engine.url):
+                            conn.execute(text("VACUUM ANALYZE"))
                             console.print("[green]✓[/green] Vacuumed PostgreSQL main database")
                         else:
-                            raw_conn.isolation_level = None
-                            raw_conn.execute("VACUUM")
+                            conn.execute(text("VACUUM"))
                             console.print("[green]✓[/green] Vacuumed SQLite main database")
-                    finally:
-                        # Detach from pool — prevents reuse with altered state.
-                        # close() on a detached proxy closes the DBAPI connection
-                        # directly and cleans up all pool bookkeeping.
-                        pool_conn.detach()
-                        pool_conn.close()
 
                     if isinstance(self.vector_cleaner, ChromaDatabaseCleaner):
                         size_before_mb = self.vector_cleaner.chroma_db_path.stat().st_size / (1024 * 1024)
@@ -939,17 +928,11 @@ class InteractivePruneUI:
                         console.print(f"[green]✓[/green] Vacuumed ChromaDB ({size_before_mb:.1f}MB → {size_after_mb:.1f}MB, freed {freed_mb:.1f}MB)")
                     elif isinstance(self.vector_cleaner, PGVectorDatabaseCleaner) and self.vector_cleaner.session:
                         pg_engine = self.vector_cleaner.session.get_bind()
-                        pg_pool_conn = pg_engine.pool.connect()
-                        pg_raw = pg_pool_conn.dbapi_connection
-                        try:
-                            pg_raw.set_isolation_level(0)  # AUTOCOMMIT
-                            cursor = pg_raw.cursor()
-                            cursor.execute("VACUUM ANALYZE")
-                            cursor.close()
+                        with pg_engine.connect().execution_options(
+                            isolation_level="AUTOCOMMIT"
+                        ) as pg_conn:
+                            pg_conn.execute(text("VACUUM ANALYZE"))
                             console.print("[green]✓[/green] Vacuumed PostgreSQL vector database")
-                        finally:
-                            pg_pool_conn.detach()
-                            pg_pool_conn.close()
                 except Exception as e:
                     console.print(f"[yellow]⚠ VACUUM failed: {e}[/yellow]")
 
