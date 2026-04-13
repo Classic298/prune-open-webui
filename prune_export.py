@@ -313,20 +313,22 @@ class PreviewExporter:
             except Exception as e:
                 log.debug(f"Error iterating {category}: {e}")
 
-        # Orphaned folders (separate because of different API)
+        # Orphaned folders — uses get_all_folders which accepts a db session
+        # for consistent snapshot semantics with the workspace items above
         if self.form_data.delete_orphaned_folders:
             try:
-                folders = await get_all_folders()
-                for folder in folders:
-                    if str(folder.user_id) not in self.active_user_ids:
-                        yield ExportRow(
-                            category="orphaned_folder",
-                            id=str(folder.id) if folder.id else "",
-                            name=getattr(folder, "name", "") or "",
-                            owner_id=folder.user_id or "",
-                            size_bytes="",
-                            reason="owner not in active users",
-                        )
+                async with get_async_db() as db:
+                    folders = await get_all_folders(db=db)
+                    for folder in folders:
+                        if str(folder.user_id) not in self.active_user_ids:
+                            yield ExportRow(
+                                category="orphaned_folder",
+                                id=str(folder.id) if folder.id else "",
+                                name=getattr(folder, "name", "") or "",
+                                owner_id=folder.user_id or "",
+                                size_bytes="",
+                                reason="owner not in active users",
+                            )
             except Exception as e:
                 log.debug(f"Error iterating orphaned folders: {e}")
 

@@ -1067,72 +1067,80 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
     Also deletes associated automation_run rows to avoid leaving
     doubly-orphaned records.
 
+    Uses stream-and-batch-delete to avoid materializing all orphaned IDs
+    in memory at once, preserving scalability on large instances.
+
     Args:
         active_user_ids: Set of user IDs that still exist
 
     Returns:
         Number of automations deleted
+
+    Raises:
+        Exception on operational errors (non-table-missing)
     """
     if Automation is None:
         return 0
 
+    batch_size = 500
+
     try:
         async with get_async_db_context() as db:
-            # Stream automations and filter by user ownership in Python
-            # to avoid SQLite parameter limits with large active_user_ids
-            orphaned_ids = []
+            # Stream-and-batch: accumulate IDs up to batch_size, then flush
+            # a DELETE before accumulating the next batch.
+            total_autos_deleted = 0
+            total_runs_deleted = 0
+            batch = []
+
             async for auto_id, auto_uid in stream_rows(
                 db, Automation.id, Automation.user_id
             ):
                 if str(auto_uid) not in active_user_ids:
-                    orphaned_ids.append(str(auto_id))
+                    batch.append(str(auto_id))
 
-            if not orphaned_ids:
-                return 0
+                if len(batch) >= batch_size:
+                    # Flush: delete runs first, then automations
+                    if AutomationRun is not None:
+                        result = await db.execute(
+                            delete(AutomationRun).where(
+                                AutomationRun.automation_id.in_(batch)
+                            )
+                        )
+                        total_runs_deleted += result.rowcount
+                    result = await db.execute(
+                        delete(Automation).where(Automation.id.in_(batch))
+                    )
+                    total_autos_deleted += result.rowcount
+                    batch.clear()
 
-            # Delete runs for these automations first (batched for SQLite)
-            batch_size = 500
-            if AutomationRun is not None:
-                runs_deleted = 0
-                for i in range(0, len(orphaned_ids), batch_size):
-                    batch = orphaned_ids[i:i + batch_size]
+            # Flush remaining batch
+            if batch:
+                if AutomationRun is not None:
                     result = await db.execute(
                         delete(AutomationRun).where(
                             AutomationRun.automation_id.in_(batch)
                         )
                     )
-                    runs_deleted += result.rowcount
-            else:
-                log.warning("AutomationRun model not available, skipping run cleanup")
-                runs_deleted = 0
-
-            # Delete the automations themselves
-            deleted = 0
-            for i in range(0, len(orphaned_ids), batch_size):
-                batch = orphaned_ids[i:i + batch_size]
+                    total_runs_deleted += result.rowcount
                 result = await db.execute(
                     delete(Automation).where(Automation.id.in_(batch))
                 )
-                deleted += result.rowcount
+                total_autos_deleted += result.rowcount
 
             await db.commit()
 
-            if deleted > 0:
+            if total_autos_deleted > 0:
                 log.info(
-                    f"Deleted {deleted} orphaned automations and "
-                    f"{runs_deleted} associated automation runs"
+                    f"Deleted {total_autos_deleted} orphaned automations and "
+                    f"{total_runs_deleted} associated automation runs"
                 )
-            return deleted
+            return total_autos_deleted
 
     except _TABLE_MISSING_ERRORS as e:
         if _is_table_missing_error(e):
             log.debug(f"Automation tables do not exist: {e}")
-        else:
-            log.error(f"Error deleting orphaned automations: {e}")
-        return 0
-    except Exception as e:
-        log.error(f"Error deleting orphaned automations: {e}")
-        return 0
+            return 0
+        raise
 
 
 async def delete_orphaned_automation_runs() -> int:
@@ -1142,39 +1150,52 @@ async def delete_orphaned_automation_runs() -> int:
     These can be left behind if an automation was deleted without cleaning
     up its runs, or on SQLite where FK CASCADE is not enforced.
 
+    Uses stream-and-batch-delete to avoid materializing all orphaned IDs
+    in memory at once.
+
     Returns:
         Number of automation_run rows deleted
+
+    Raises:
+        Exception on operational errors (non-table-missing)
     """
     if AutomationRun is None or Automation is None:
         return 0
 
+    batch_size = 500
+
     try:
         async with get_async_db_context() as db:
-            # Stream orphaned IDs in chunks to avoid bulk materialization
-            orphaned_ids = []
-            async for (run_id,) in stream_rows(
-                db, AutomationRun.id,
-                filter_clause=or_(
-                    AutomationRun.automation_id.is_(None),
-                    not_(AutomationRun.automation_id.in_(
-                        select(Automation.id)
-                    ))
-                )
-            ):
-                orphaned_ids.append(str(run_id))
+            # Build the set of valid automation IDs for fast lookup.
+            # Automation IDs are few relative to runs, so this is safe.
+            valid_auto_ids = set()
+            async for (aid,) in stream_rows(db, Automation.id):
+                valid_auto_ids.add(aid)
 
-            if not orphaned_ids:
-                return 0
-
-            # Delete in batches to avoid SQLite variable limits
+            # Stream runs and batch-delete orphans on-the-fly
             deleted = 0
-            batch_size = 500
-            for i in range(0, len(orphaned_ids), batch_size):
-                batch = orphaned_ids[i:i + batch_size]
+            batch = []
+
+            async for run_id, parent_id in stream_rows(
+                db, AutomationRun.id, AutomationRun.automation_id
+            ):
+                if parent_id is None or parent_id not in valid_auto_ids:
+                    batch.append(str(run_id))
+
+                if len(batch) >= batch_size:
+                    result = await db.execute(
+                        delete(AutomationRun).where(AutomationRun.id.in_(batch))
+                    )
+                    deleted += result.rowcount
+                    batch.clear()
+
+            # Flush remaining batch
+            if batch:
                 result = await db.execute(
                     delete(AutomationRun).where(AutomationRun.id.in_(batch))
                 )
                 deleted += result.rowcount
+
             await db.commit()
 
             if deleted > 0:
@@ -1184,12 +1205,8 @@ async def delete_orphaned_automation_runs() -> int:
     except _TABLE_MISSING_ERRORS as e:
         if _is_table_missing_error(e):
             log.debug(f"Automation tables do not exist: {e}")
-        else:
-            log.error(f"Error deleting orphaned automation_runs: {e}")
-        return 0
-    except Exception as e:
-        log.error(f"Error deleting orphaned automation_runs: {e}")
-        return 0
+            return 0
+        raise
 
 
 def cleanup_audio_cache(max_age_days: Optional[int] = 30) -> int:
