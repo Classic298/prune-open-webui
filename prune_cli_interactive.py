@@ -922,9 +922,11 @@ class InteractivePruneUI:
                             raw_conn.execute("VACUUM")
                             console.print("[green]✓[/green] Vacuumed SQLite main database")
                     finally:
-                        # Detach from pool — prevents reuse with altered state
+                        # Detach from pool — prevents reuse with altered state.
+                        # close() on a detached proxy closes the DBAPI connection
+                        # directly and cleans up all pool bookkeeping.
                         pool_conn.detach()
-                        raw_conn.close()
+                        pool_conn.close()
 
                     if isinstance(self.vector_cleaner, ChromaDatabaseCleaner):
                         size_before_mb = self.vector_cleaner.chroma_db_path.stat().st_size / (1024 * 1024)
@@ -947,7 +949,7 @@ class InteractivePruneUI:
                             console.print("[green]✓[/green] Vacuumed PostgreSQL vector database")
                         finally:
                             pg_pool_conn.detach()
-                            pg_raw.close()
+                            pg_pool_conn.close()
                 except Exception as e:
                     console.print(f"[yellow]⚠ VACUUM failed: {e}[/yellow]")
 

@@ -875,9 +875,11 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                         raw_conn.execute("VACUUM")
                         log.info("Vacuumed SQLite main database")
                 finally:
-                    # Detach from pool — prevents reuse with altered state
+                    # Detach from pool — prevents reuse with altered state.
+                    # close() on a detached proxy closes the DBAPI connection
+                    # directly and cleans up all pool bookkeeping.
                     pool_conn.detach()
-                    raw_conn.close()
+                    pool_conn.close()
             except Exception as e:
                 log.error(f"Failed to vacuum main database: {e}")
 
@@ -905,7 +907,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                         log.info("Executed VACUUM ANALYZE on PostgreSQL vector database")
                     finally:
                         pg_pool_conn.detach()
-                        pg_raw.close()
+                        pg_pool_conn.close()
                 except Exception as e:
                     log.error(f"Failed to vacuum PostgreSQL vector database: {e}")
         else:

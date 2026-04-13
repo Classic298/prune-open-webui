@@ -1064,8 +1064,9 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
     """
     Delete automation rows whose owner user no longer exists.
 
-    Also deletes associated automation_run rows to avoid leaving
-    doubly-orphaned records.
+    Also deletes associated automation_run rows (best-effort) to avoid
+    leaving doubly-orphaned records.  If the automation_run table is
+    missing or inaccessible, automation deletion still proceeds.
 
     Uses stream-and-batch-delete to avoid materializing all orphaned IDs
     in memory at once, preserving scalability on large instances.
@@ -1084,6 +1085,28 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
 
     batch_size = 500
 
+    async def _delete_runs_for_batch(db, batch: list) -> int:
+        """Best-effort deletion of automation runs for a batch of automation IDs.
+
+        Returns the number of runs deleted.  If the automation_run table
+        does not exist, logs a debug message and returns 0 so automation
+        deletion can proceed.
+        """
+        if AutomationRun is None:
+            return 0
+        try:
+            result = await db.execute(
+                delete(AutomationRun).where(
+                    AutomationRun.automation_id.in_(batch)
+                )
+            )
+            return result.rowcount
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
+                log.debug(f"automation_run table not available, skipping run cleanup: {e}")
+                return 0
+            raise
+
     try:
         async with get_async_db_context() as db:
             # Stream-and-batch: accumulate IDs up to batch_size, then flush
@@ -1099,14 +1122,8 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
                     batch.append(str(auto_id))
 
                 if len(batch) >= batch_size:
-                    # Flush: delete runs first, then automations
-                    if AutomationRun is not None:
-                        result = await db.execute(
-                            delete(AutomationRun).where(
-                                AutomationRun.automation_id.in_(batch)
-                            )
-                        )
-                        total_runs_deleted += result.rowcount
+                    # Flush: delete runs first (best-effort), then automations
+                    total_runs_deleted += await _delete_runs_for_batch(db, batch)
                     result = await db.execute(
                         delete(Automation).where(Automation.id.in_(batch))
                     )
@@ -1115,13 +1132,7 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
 
             # Flush remaining batch
             if batch:
-                if AutomationRun is not None:
-                    result = await db.execute(
-                        delete(AutomationRun).where(
-                            AutomationRun.automation_id.in_(batch)
-                        )
-                    )
-                    total_runs_deleted += result.rowcount
+                total_runs_deleted += await _delete_runs_for_batch(db, batch)
                 result = await db.execute(
                     delete(Automation).where(Automation.id.in_(batch))
                 )
@@ -1138,7 +1149,7 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
 
     except _TABLE_MISSING_ERRORS as e:
         if _is_table_missing_error(e):
-            log.debug(f"Automation tables do not exist: {e}")
+            log.debug(f"Automation table does not exist: {e}")
             return 0
         raise
 
