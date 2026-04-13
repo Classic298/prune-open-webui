@@ -123,11 +123,17 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.config import CACHE_DIR
     from open_webui.storage.provider import Storage
 
+    # Core ORM models — needed for cleanup queries
     try:
-        from open_webui.models.automations import Automation, AutomationRun, Automations, AutomationRuns
+        from open_webui.models.automations import Automation, AutomationRun
     except ImportError:
         Automation = None
         AutomationRun = None
+
+    # Optional manager classes — not required for prune operations
+    try:
+        from open_webui.models.automations import Automations, AutomationRuns
+    except ImportError:
         Automations = None
         AutomationRuns = None
 
@@ -164,11 +170,17 @@ elif _import_strategy == "git":
     from backend.open_webui.config import CACHE_DIR
     from backend.open_webui.storage.provider import Storage
 
+    # Core ORM models — needed for cleanup queries
     try:
-        from backend.open_webui.models.automations import Automation, AutomationRun, Automations, AutomationRuns
+        from backend.open_webui.models.automations import Automation, AutomationRun
     except ImportError:
         Automation = None
         AutomationRun = None
+
+    # Optional manager classes — not required for prune operations
+    try:
+        from backend.open_webui.models.automations import Automations, AutomationRuns
+    except ImportError:
         Automations = None
         AutomationRuns = None
 
