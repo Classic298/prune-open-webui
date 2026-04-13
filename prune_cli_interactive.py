@@ -905,7 +905,11 @@ class InteractivePruneUI:
                 task = progress.add_task("Running VACUUM (this may take a while)...", total=None)
                 try:
                     db_url = str(sync_engine.url)
-                    raw_conn = sync_engine.raw_connection()
+                    # Get a raw connection and explicitly detach it from the
+                    # pool after VACUUM so the altered autocommit/isolation
+                    # state is never returned and reused.
+                    pool_conn = sync_engine.pool.connect()
+                    raw_conn = pool_conn.dbapi_connection
                     try:
                         if 'postgresql' in db_url:
                             raw_conn.set_isolation_level(0)  # AUTOCOMMIT
@@ -918,6 +922,8 @@ class InteractivePruneUI:
                             raw_conn.execute("VACUUM")
                             console.print("[green]✓[/green] Vacuumed SQLite main database")
                     finally:
+                        # Detach from pool — prevents reuse with altered state
+                        pool_conn.detach()
                         raw_conn.close()
 
                     if isinstance(self.vector_cleaner, ChromaDatabaseCleaner):
@@ -931,15 +937,17 @@ class InteractivePruneUI:
                         console.print(f"[green]✓[/green] Vacuumed ChromaDB ({size_before_mb:.1f}MB → {size_after_mb:.1f}MB, freed {freed_mb:.1f}MB)")
                     elif isinstance(self.vector_cleaner, PGVectorDatabaseCleaner) and self.vector_cleaner.session:
                         pg_engine = self.vector_cleaner.session.get_bind()
-                        pg_raw_conn = pg_engine.raw_connection()
+                        pg_pool_conn = pg_engine.pool.connect()
+                        pg_raw = pg_pool_conn.dbapi_connection
                         try:
-                            pg_raw_conn.set_isolation_level(0)  # AUTOCOMMIT
-                            cursor = pg_raw_conn.cursor()
+                            pg_raw.set_isolation_level(0)  # AUTOCOMMIT
+                            cursor = pg_raw.cursor()
                             cursor.execute("VACUUM ANALYZE")
                             cursor.close()
                             console.print("[green]✓[/green] Vacuumed PostgreSQL vector database")
                         finally:
-                            pg_raw_conn.close()
+                            pg_pool_conn.detach()
+                            pg_raw.close()
                 except Exception as e:
                     console.print(f"[yellow]⚠ VACUUM failed: {e}[/yellow]")
 

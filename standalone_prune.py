@@ -856,7 +856,11 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
             try:
                 db_url = str(sync_engine.url)
-                raw_conn = sync_engine.raw_connection()
+                # Get a raw connection and explicitly detach it from the
+                # pool after VACUUM so the altered autocommit/isolation
+                # state is never returned and reused.
+                pool_conn = sync_engine.pool.connect()
+                raw_conn = pool_conn.dbapi_connection
                 try:
                     if 'postgresql' in db_url:
                         # PostgreSQL: VACUUM requires AUTOCOMMIT isolation
@@ -867,12 +871,12 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                         log.info("Vacuumed PostgreSQL main database")
                     else:
                         # SQLite: VACUUM cannot run inside BEGIN/COMMIT.
-                        # raw_connection() from the pool may have an implicit
-                        # transaction; isolation_level = None gives autocommit.
                         raw_conn.isolation_level = None
                         raw_conn.execute("VACUUM")
                         log.info("Vacuumed SQLite main database")
                 finally:
+                    # Detach from pool — prevents reuse with altered state
+                    pool_conn.detach()
                     raw_conn.close()
             except Exception as e:
                 log.error(f"Failed to vacuum main database: {e}")
@@ -891,15 +895,17 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             ):
                 try:
                     pg_engine = vector_cleaner.session.get_bind()
-                    pg_raw_conn = pg_engine.raw_connection()
+                    pg_pool_conn = pg_engine.pool.connect()
+                    pg_raw = pg_pool_conn.dbapi_connection
                     try:
-                        pg_raw_conn.set_isolation_level(0)  # AUTOCOMMIT
-                        cursor = pg_raw_conn.cursor()
+                        pg_raw.set_isolation_level(0)  # AUTOCOMMIT
+                        cursor = pg_raw.cursor()
                         cursor.execute("VACUUM ANALYZE")
                         cursor.close()
                         log.info("Executed VACUUM ANALYZE on PostgreSQL vector database")
                     finally:
-                        pg_raw_conn.close()
+                        pg_pool_conn.detach()
+                        pg_raw.close()
                 except Exception as e:
                     log.error(f"Failed to vacuum PostgreSQL vector database: {e}")
         else:
