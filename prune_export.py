@@ -16,7 +16,7 @@ import logging
 import time
 from collections import namedtuple
 from pathlib import Path
-from typing import Callable, Generator, Optional, Set
+from typing import AsyncGenerator, Callable, Optional, Set
 
 from sqlalchemy import select, and_, or_, not_
 
@@ -28,8 +28,9 @@ try:
         Users, Chat, Chats, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
+        Automation, AutomationRun,
         Folder, Folders, ChatMessage,
-        get_db, get_db_context, CACHE_DIR,
+        get_async_db, get_async_db_context, CACHE_DIR,
     )
 except ImportError as e:
     log.error(f"Failed to import Open WebUI modules: {e}")
@@ -37,7 +38,7 @@ except ImportError as e:
 
 from prune_models import PruneDataForm, PrunePreviewResult
 from prune_core import VectorDatabaseCleaner
-from prune_operations import get_all_folders
+from prune_operations import get_all_folders, stream_rows
 
 
 # Row format for the exported CSV
@@ -66,9 +67,9 @@ class PreviewExporter:
     """
     Streams preview details to CSV without accumulating in memory.
 
-    All iteration happens through generator methods that yield one ExportRow
-    at a time. The CSV writer flushes each row to disk immediately via
-    Python's default 8KB file buffer.
+    All iteration happens through async generator methods that yield one
+    ExportRow at a time. The CSV writer flushes each row to disk immediately
+    via Python's default 8KB file buffer.
     """
 
     def __init__(
@@ -90,7 +91,7 @@ class PreviewExporter:
         """Return estimated CSV file size in bytes from existing preview counts."""
         return preview_result.total_items() * _AVG_BYTES_PER_ROW
 
-    def export(
+    async def export(
         self,
         output_path: Path,
         preview_result: PrunePreviewResult,
@@ -113,7 +114,7 @@ class PreviewExporter:
             writer = csv.writer(f)
             writer.writerow(["category", "id", "name", "owner_id", "size_bytes", "reason"])
 
-            # Each generator yields ExportRow tuples one at a time.
+            # Each async generator yields ExportRow tuples one at a time.
             # Only one category is iterated at a time — previous batches are GC'd.
             generators = [
                 self._iter_inactive_users(),
@@ -124,11 +125,13 @@ class PreviewExporter:
                 self._iter_orphaned_uploads(),
                 self._iter_orphaned_vectors(),
                 self._iter_orphaned_chat_messages(),
+                self._iter_orphaned_automations(),
+                self._iter_orphaned_automation_runs(),
                 self._iter_audio_cache(),
             ]
 
             for gen in generators:
-                for row in gen:
+                async for row in gen:
                     writer.writerow(row)
                     rows_written += 1
                     if progress_callback:
@@ -137,9 +140,9 @@ class PreviewExporter:
         log.info(f"Exported {rows_written} rows to {output_path}")
         return rows_written
 
-    # ── Per-category generators ──────────────────────────────────────────
+    # ── Per-category async generators ────────────────────────────────────
 
-    def _iter_inactive_users(self) -> Generator[ExportRow, None, None]:
+    async def _iter_inactive_users(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each inactive user."""
         inactive_days = self.form_data.delete_inactive_users_days
         if inactive_days is None:
@@ -148,7 +151,7 @@ class PreviewExporter:
         cutoff_time = int(time.time()) - (inactive_days * 86400)
 
         try:
-            all_users = Users.get_users()["users"]
+            all_users = (await Users.get_users())["users"]
             for user in all_users:
                 if self.form_data.exempt_admin_users and user.role == "admin":
                     continue
@@ -166,7 +169,7 @@ class PreviewExporter:
         except Exception as e:
             log.debug(f"Error iterating inactive users: {e}")
 
-    def _iter_old_chats(self) -> Generator[ExportRow, None, None]:
+    async def _iter_old_chats(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each old chat (age-based deletion)."""
         if self.form_data.days is None:
             return
@@ -174,7 +177,7 @@ class PreviewExporter:
         cutoff_time = int(time.time()) - (self.form_data.days * 86400)
 
         try:
-            with get_db() as db:
+            async with get_async_db() as db:
                 conditions = [Chat.updated_at < cutoff_time]
 
                 if self.form_data.exempt_archived_chats:
@@ -189,32 +192,23 @@ class PreviewExporter:
                     if folder_conditions:
                         conditions.append(and_(*folder_conditions))
 
-                stmt = select(Chat.id, Chat.title, Chat.user_id).filter(*conditions)
-
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for chat_id, title, user_id in rows:
-                        display_title = (title or "")[:100]
-                        yield ExportRow(
-                            category="old_chat",
-                            id=chat_id,
-                            name=display_title,
-                            owner_id=user_id or "",
-                            size_bytes="",
-                            reason=f"older than {self.form_data.days} days",
-                        )
+                async for chat_id, title, user_id in stream_rows(
+                    db, Chat.id, Chat.title, Chat.user_id,
+                    filter_clause=and_(*conditions)
+                ):
+                    display_title = (title or "")[:100]
+                    yield ExportRow(
+                        category="old_chat",
+                        id=chat_id,
+                        name=display_title,
+                        owner_id=user_id or "",
+                        size_bytes="",
+                        reason=f"older than {self.form_data.days} days",
+                    )
         except Exception as e:
             log.debug(f"Error iterating old chats: {e}")
 
-    def _iter_orphaned_chats(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_chats(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned chat (owner no longer exists)."""
         if not self.form_data.delete_orphaned_chats:
             return
@@ -223,83 +217,62 @@ class PreviewExporter:
             return
 
         try:
-            with get_db() as db:
-                stmt = select(Chat.id, Chat.title, Chat.user_id).filter(
-                    not_(Chat.user_id.in_(self.active_user_ids))
-                )
-
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for chat_id, title, user_id in rows:
-                        display_title = (title or "")[:100]
-                        yield ExportRow(
-                            category="orphaned_chat",
-                            id=chat_id,
-                            name=display_title,
-                            owner_id=user_id or "",
-                            size_bytes="",
-                            reason="owner not in active users",
-                        )
+            async with get_async_db() as db:
+                async for chat_id, title, user_id in stream_rows(
+                    db, Chat.id, Chat.title, Chat.user_id,
+                    filter_clause=not_(Chat.user_id.in_(self.active_user_ids))
+                ):
+                    display_title = (title or "")[:100]
+                    yield ExportRow(
+                        category="orphaned_chat",
+                        id=chat_id,
+                        name=display_title,
+                        owner_id=user_id or "",
+                        size_bytes="",
+                        reason="owner not in active users",
+                    )
         except Exception as e:
             log.debug(f"Error iterating orphaned chats: {e}")
 
-    def _iter_orphaned_files(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_files(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned file record."""
         # Cannot use File.id.in_(active_file_ids) as a SQL filter because
         # active_file_ids can contain 100K+ entries, generating unseemly
         # large queries that OOM both Python and the database.  Instead,
         # stream all file records and check membership in Python.
         try:
-            with get_db() as db:
-                stmt = select(File.id, File.filename, File.user_id)
+            async with get_async_db() as db:
+                async for file_id, filename, user_id in stream_rows(
+                    db, File.id, File.filename, File.user_id
+                ):
+                    # Normalize to str — ORM can return uuid.UUID on Postgres
+                    file_id_str = str(file_id) if file_id else ""
+                    user_id_str = str(user_id) if user_id else ""
+                    is_orphaned = (
+                        (file_id_str not in self.active_file_ids)
+                        or (user_id_str not in self.active_user_ids)
+                    )
+                    if not is_orphaned:
+                        continue
 
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
+                    reason_parts = []
+                    if file_id_str not in self.active_file_ids:
+                        reason_parts.append("not referenced")
+                    if user_id_str not in self.active_user_ids:
+                        reason_parts.append("owner not in active users")
 
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for file_id, filename, user_id in rows:
-                        # Normalize to str — ORM can return uuid.UUID on Postgres
-                        file_id_str = str(file_id) if file_id else ""
-                        user_id_str = str(user_id) if user_id else ""
-                        is_orphaned = (
-                            (file_id_str not in self.active_file_ids)
-                            or (user_id_str not in self.active_user_ids)
-                        )
-                        if not is_orphaned:
-                            continue
-
-                        reason_parts = []
-                        if file_id_str not in self.active_file_ids:
-                            reason_parts.append("not referenced")
-                        if user_id_str not in self.active_user_ids:
-                            reason_parts.append("owner not in active users")
-
-                        yield ExportRow(
-                            category="orphaned_file",
-                            id=file_id or "",
-                            name=filename or "",
-                            owner_id=user_id or "",
-                            size_bytes="",
-                            reason="; ".join(reason_parts) if reason_parts else "orphaned",
-                        )
+                    yield ExportRow(
+                        category="orphaned_file",
+                        id=file_id or "",
+                        name=filename or "",
+                        owner_id=user_id or "",
+                        size_bytes="",
+                        reason="; ".join(reason_parts) if reason_parts else "orphaned",
+                    )
         except Exception as e:
             log.debug(f"Error iterating orphaned files: {e}")
 
-    def _iter_orphaned_workspace_items(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_workspace_items(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned workspace item (tools, functions, etc.)."""
         if not self.active_user_ids:
             return
@@ -324,38 +297,29 @@ class PreviewExporter:
                 name_col = getattr(cls, name_attr)
                 uid_col = getattr(cls, uid_attr)
 
-                with get_db() as db:
-                    stmt = select(id_col, name_col, uid_col).filter(
-                        not_(uid_col.in_(self.active_user_ids))
-                    )
-
-                    try:
-                        result = db.execute(stmt.execution_options(stream_results=True))
-                    except AttributeError:
-                        result = db.execution_options(stream_results=True).execute(stmt)
-
-                    while True:
-                        rows = result.fetchmany(1000)
-                        if not rows:
-                            break
-
-                        for item_id, item_name, user_id in rows:
-                            yield ExportRow(
-                                category=category,
-                                id=str(item_id) if item_id else "",
-                                name=str(item_name or "")[:100],
-                                owner_id=user_id or "",
-                                size_bytes="",
-                                reason="owner not in active users",
-                            )
+                async with get_async_db() as db:
+                    async for item_id, item_name, user_id in stream_rows(
+                        db, id_col, name_col, uid_col,
+                        filter_clause=not_(uid_col.in_(self.active_user_ids))
+                    ):
+                        yield ExportRow(
+                            category=category,
+                            id=str(item_id) if item_id else "",
+                            name=str(item_name or "")[:100],
+                            owner_id=user_id or "",
+                            size_bytes="",
+                            reason="owner not in active users",
+                        )
             except Exception as e:
                 log.debug(f"Error iterating {category}: {e}")
 
-        # Orphaned folders (separate because of different API)
+        # Orphaned folders — uses get_all_folders which accepts a db session
+        # for consistent snapshot semantics with the workspace items above
         if self.form_data.delete_orphaned_folders:
             try:
-                with get_db() as db:
-                    for folder in get_all_folders(db=db):
+                async with get_async_db() as db:
+                    folders = await get_all_folders(db=db)
+                    for folder in folders:
                         if str(folder.user_id) not in self.active_user_ids:
                             yield ExportRow(
                                 category="orphaned_folder",
@@ -368,7 +332,7 @@ class PreviewExporter:
             except Exception as e:
                 log.debug(f"Error iterating orphaned folders: {e}")
 
-    def _iter_orphaned_uploads(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_uploads(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned physical upload file."""
         upload_dir = Path(CACHE_DIR).parent / "uploads"
         if not upload_dir.exists():
@@ -414,7 +378,7 @@ class PreviewExporter:
         except Exception as e:
             log.debug(f"Error iterating orphaned uploads: {e}")
 
-    def _iter_orphaned_vectors(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_vectors(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned vector collection/tenant."""
         try:
             for orphaned_id, context in self.vector_cleaner.iter_orphaned_collections(
@@ -431,40 +395,123 @@ class PreviewExporter:
         except Exception as e:
             log.debug(f"Error iterating orphaned vectors: {e}")
 
-    def _iter_orphaned_chat_messages(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_chat_messages(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned chat message."""
         if not self.form_data.delete_orphaned_chat_messages:
             return
 
         try:
-            with get_db() as db:
-                stmt = select(ChatMessage.id, ChatMessage.chat_id).filter(
-                    not_(ChatMessage.chat_id.in_(select(Chat.id)))
-                )
-
-                try:
-                    result = db.execute(stmt.execution_options(stream_results=True))
-                except AttributeError:
-                    result = db.execution_options(stream_results=True).execute(stmt)
-
-                while True:
-                    rows = result.fetchmany(1000)
-                    if not rows:
-                        break
-
-                    for message_id, chat_id in rows:
-                        yield ExportRow(
-                            category="orphaned_chat_message",
-                            id=message_id or "",
-                            name=f"chat: {chat_id}" if chat_id else "",
-                            owner_id="",
-                            size_bytes="",
-                            reason="parent chat no longer exists",
-                        )
+            async with get_async_db() as db:
+                async for message_id, chat_id in stream_rows(
+                    db, ChatMessage.id, ChatMessage.chat_id,
+                    filter_clause=not_(ChatMessage.chat_id.in_(select(Chat.id)))
+                ):
+                    yield ExportRow(
+                        category="orphaned_chat_message",
+                        id=message_id or "",
+                        name=f"chat: {chat_id}" if chat_id else "",
+                        owner_id="",
+                        size_bytes="",
+                        reason="parent chat no longer exists",
+                    )
         except Exception as e:
             log.debug(f"Error iterating orphaned chat messages (table may not exist): {e}")
 
-    def _iter_audio_cache(self) -> Generator[ExportRow, None, None]:
+    async def _iter_orphaned_automations(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each orphaned automation (owner no longer exists).
+
+        Also caches automation ID sets for reuse by _iter_orphaned_automation_runs
+        to avoid a redundant second scan of the automations table.
+        """
+        if not self.form_data.delete_orphaned_automations or Automation is None:
+            return
+
+        # Build into local sets first; only cache on success so the runs
+        # iterator falls back to a fresh scan if this one fails
+        all_ids = set()
+        orphaned_ids = set()
+
+        try:
+            async with get_async_db() as db:
+                # Stream all automations and filter by user ownership in Python
+                # to avoid SQLite parameter limits with large active_user_ids
+                async for automation_id, name, user_id in stream_rows(
+                    db, Automation.id, Automation.name, Automation.user_id
+                ):
+                    auto_id_str = str(automation_id) if automation_id else ""
+                    all_ids.add(auto_id_str)
+                    if str(user_id) not in self.active_user_ids:
+                        orphaned_ids.add(auto_id_str)
+                        yield ExportRow(
+                            category="orphaned_automation",
+                            id=auto_id_str,
+                            name=(name or "")[:100],
+                            owner_id=str(user_id) if user_id else "",
+                            size_bytes="",
+                            reason="owner not in active users",
+                        )
+
+            # Cache only after successful scan
+            self._all_automation_ids = all_ids
+            self._orphaned_automation_ids = orphaned_ids
+        except Exception as e:
+            log.debug(f"Error iterating orphaned automations (table may not exist): {e}")
+
+    async def _iter_orphaned_automation_runs(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each orphaned automation run.
+
+        Includes runs whose parent automation is missing AND runs attached
+        to automations that will be deleted as orphaned (owner-based).
+
+        Reuses ID sets cached by _iter_orphaned_automations to avoid
+        a redundant second scan of the automations table.
+        """
+        if not self.form_data.delete_orphaned_automations or AutomationRun is None or Automation is None:
+            return
+
+        # Use cached sets from _iter_orphaned_automations if available
+        all_automation_ids = getattr(self, '_all_automation_ids', None)
+        orphaned_automation_ids = getattr(self, '_orphaned_automation_ids', None)
+
+        try:
+            async with get_async_db() as db:
+                # Fall back to a fresh scan if cache is not populated
+                if all_automation_ids is None:
+                    all_automation_ids = set()
+                    orphaned_automation_ids = set()
+                    async for auto_id, auto_uid in stream_rows(
+                        db, Automation.id, Automation.user_id
+                    ):
+                        auto_id_str = str(auto_id)
+                        all_automation_ids.add(auto_id_str)
+                        if str(auto_uid) not in self.active_user_ids:
+                            orphaned_automation_ids.add(auto_id_str)
+
+                # Stream runs and filter in Python
+                async for run_id, automation_id in stream_rows(
+                    db, AutomationRun.id, AutomationRun.automation_id
+                ):
+                    auto_id_str = str(automation_id) if automation_id else ""
+                    # Orphaned if parent missing OR parent will be deleted
+                    if auto_id_str not in all_automation_ids:
+                        reason = "parent automation no longer exists"
+                    elif auto_id_str in orphaned_automation_ids:
+                        reason = "parent automation is orphaned (owner deleted)"
+                    else:
+                        continue
+
+                    yield ExportRow(
+                        category="orphaned_automation_run",
+                        id=str(run_id) if run_id else "",
+                        name=f"automation: {automation_id}" if automation_id else "",
+                        owner_id="",
+                        size_bytes="",
+                        reason=reason,
+                    )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned automation runs (table may not exist): {e}")
+
+    async def _iter_audio_cache(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each old audio cache file."""
         max_age_days = self.form_data.audio_cache_max_age_days
         if max_age_days is None:

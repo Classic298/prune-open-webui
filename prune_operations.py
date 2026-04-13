@@ -5,14 +5,15 @@ This module contains all the helper functions from backend/open_webui/routers/pr
 that perform the actual pruning operations, counting, and cleanup.
 """
 
+import asyncio
 import inspect
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Set, Callable, Any
-from sqlalchemy import select, text, func, and_, or_, not_
+from typing import AsyncGenerator, Optional, Set, Callable, Any
+from sqlalchemy import select, text, func, and_, or_, not_, delete
 from sqlalchemy.exc import OperationalError, ProgrammingError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
@@ -33,13 +34,13 @@ def _is_table_missing_error(exc: Exception) -> bool:
     )
 
 
-def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
+async def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
     """
-    Retry a database operation if it fails due to database lock.
+    Retry an async database operation if it fails due to database lock.
     Uses exponential backoff: 0.5s, 1s, 2s
 
     Args:
-        func: Function to retry
+        func: Async function to retry
         max_retries: Maximum number of retry attempts
         base_delay: Base delay in seconds (doubles each retry)
 
@@ -52,13 +53,13 @@ def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0
     last_exception = None
     for attempt in range(max_retries + 1):
         try:
-            return func()
+            return await func()
         except OperationalError as e:
             last_exception = e
             if 'database is locked' in str(e).lower() and attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
                 log.warning(f"Database locked, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
                 raise
 
@@ -66,7 +67,7 @@ def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0
     raise last_exception
 
 
-def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
+async def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
     """
     Yield rows in batches using keyset pagination on the first column.
 
@@ -81,7 +82,7 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
     to prevent infinite re-fetch.
 
     Args:
-        db: SQLAlchemy session
+        db: SQLAlchemy async session
         *columns: One or more ORM column descriptors to SELECT.
                   The first column is used for ordering/keysetting
                   and MUST be unique (typically a primary key).
@@ -111,10 +112,12 @@ def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
         if last_key is not None:
             stmt = stmt.where(order_col > last_key)
         stmt = stmt.limit(batch_size)
-        batch = db.execute(stmt).fetchall()
+        result = await db.execute(stmt)
+        batch = result.fetchall()
         if not batch:
             break
-        yield from batch
+        for row in batch:
+            yield row
         last_key = batch[-1][0]
         if len(batch) < batch_size:
             break
@@ -126,8 +129,9 @@ try:
         Users, Chat, Chats, ChatFile, ChatMessage, Message, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
+        Automation, AutomationRun, Automations, AutomationRuns,
         Folder, Folders, FolderModel, Storage,
-        get_db, get_db_context, CACHE_DIR
+        get_async_db, get_async_db_context, CACHE_DIR
     )
 except ImportError as e:
     log.error(f"Failed to import Open WebUI modules: {e}")
@@ -138,7 +142,7 @@ from prune_models import PruneDataForm
 from prune_core import collect_file_ids_from_dict
 
 
-def get_kb_user_map() -> dict:
+async def get_kb_user_map() -> dict:
     """Return {kb_id: user_id} from the knowledge table using lightweight SQL.
 
     This replaces Knowledges.get_knowledge_bases() which can OOM on large
@@ -148,17 +152,17 @@ def get_kb_user_map() -> dict:
     Raises on failure — callers (prune execution) must not proceed with an
     empty preservation set, as that could cause over-deletion.
     """
-    def _scan():
+    async def _scan():
         result = {}
-        with get_db() as db:
-            for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
+        async with get_async_db() as db:
+            async for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
                 result[str(kb_id)] = str(uid)
         return result
-    return retry_on_db_lock(_scan)
+    return await retry_on_db_lock(_scan)
 
 
 # API Compatibility Helpers
-def get_all_folders(db: Optional[Session] = None):
+async def get_all_folders(db: Optional[AsyncSession] = None):
     """
     Get all folders from database.
     Compatibility helper for newer Folders API that doesn't have get_all_folders().
@@ -171,13 +175,14 @@ def get_all_folders(db: Optional[Session] = None):
         if hasattr(Folders, 'get_all_folders'):
             # Check if the method supports db parameter
             if 'db' in inspect.signature(Folders.get_all_folders).parameters:
-                return Folders.get_all_folders(db=db)
+                return await Folders.get_all_folders(db=db)
             else:
-                return Folders.get_all_folders()
+                return await Folders.get_all_folders()
 
         # Otherwise query directly from database
-        with get_db_context(db) as session:
-            folders = session.query(Folder).all()
+        async with get_async_db_context(db) as session:
+            result = await session.execute(select(Folder))
+            folders = result.scalars().all()
             # Convert to FolderModel instances
             return [FolderModel.model_validate(f) for f in folders]
     except Exception as e:
@@ -185,7 +190,7 @@ def get_all_folders(db: Optional[Session] = None):
         return []
 
 
-def count_inactive_users(
+async def count_inactive_users(
     inactive_days: Optional[int], exempt_admin: bool, exempt_pending: bool, all_users=None
 ) -> int:
     """Count users that would be deleted for inactivity.
@@ -204,7 +209,7 @@ def count_inactive_users(
 
     try:
         if all_users is None:
-            all_users = Users.get_users()["users"]
+            all_users = (await Users.get_users())["users"]
         for user in all_users:
             if exempt_admin and user.role == "admin":
                 continue
@@ -218,7 +223,7 @@ def count_inactive_users(
     return count
 
 
-def count_old_chats(
+async def count_old_chats(
     days: Optional[int], exempt_archived: bool, exempt_in_folders: bool
 ) -> int:
     """Count chats that would be deleted by age.
@@ -232,7 +237,7 @@ def count_old_chats(
     cutoff_time = int(time.time()) - (days * 86400)
 
     try:
-        with get_db_context() as db:
+        async with get_async_db_context() as db:
             # Build filter conditions
             conditions = [Chat.updated_at < cutoff_time]
 
@@ -248,14 +253,16 @@ def count_old_chats(
                 if folder_conditions:
                     conditions.append(and_(*folder_conditions))
 
-            count = db.query(func.count(Chat.id)).filter(*conditions).scalar()
-            return count or 0
+            result = await db.execute(
+                select(func.count(Chat.id)).where(and_(*conditions))
+            )
+            return result.scalar_one_or_none() or 0
     except Exception as e:
         log.debug(f"Error counting old chats: {e}")
         return 0
 
 
-def count_orphaned_records(
+async def count_orphaned_records(
     form_data: PruneDataForm,
     active_file_ids: Set[str],
     active_user_ids: Set[str]
@@ -278,10 +285,12 @@ def count_orphaned_records(
         "skills": 0,
         "folders": 0,
         "chat_messages": 0,
+        "automations": 0,
+        "automation_runs": 0,
     }
 
     try:
-        with get_db_context() as db:
+        async with get_async_db_context() as db:
             # Count orphaned files.
             # A file is orphaned when it is not in the active_file_ids set OR
             # its owner is not in active_user_ids.
@@ -291,7 +300,7 @@ def count_orphaned_records(
             # active_user_ids can exceed SQLite's ~999 parameter limit on
             # large instances.
             orphaned_file_count = 0
-            for fid, uid in stream_rows(db, File.id, File.user_id):
+            async for fid, uid in stream_rows(db, File.id, File.user_id):
                 if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
                     orphaned_file_count += 1
             counts["files"] = orphaned_file_count
@@ -311,25 +320,77 @@ def count_orphaned_records(
 
             for key, table_cls, user_id_col, enabled in _table_flag_map:
                 if enabled and active_user_ids:
-                    counts[key] = db.query(func.count()).select_from(table_cls).filter(
-                        not_(user_id_col.in_(active_user_ids))
-                    ).scalar() or 0
+                    result = await db.execute(
+                        select(func.count()).select_from(table_cls).where(
+                            not_(user_id_col.in_(active_user_ids))
+                        )
+                    )
+                    counts[key] = result.scalar_one_or_none() or 0
 
             # Count orphaned chat_messages (chat_id references a chat that no longer exists)
             if form_data.delete_orphaned_chat_messages:
                 try:
-                    counts["chat_messages"] = db.query(
-                        func.count(ChatMessage.id)
-                    ).filter(
-                        not_(ChatMessage.chat_id.in_(
-                            select(Chat.id)
-                        ))
-                    ).scalar() or 0
+                    result = await db.execute(
+                        select(func.count(ChatMessage.id)).where(
+                            not_(ChatMessage.chat_id.in_(select(Chat.id)))
+                        )
+                    )
+                    counts["chat_messages"] = result.scalar_one_or_none() or 0
                 except _TABLE_MISSING_ERRORS as e:
                     if _is_table_missing_error(e):
                         log.debug(f"chat_message table does not exist: {e}")
                     else:
                         raise
+
+            # Count orphaned automations and their runs
+            if form_data.delete_orphaned_automations and Automation is not None:
+                try:
+                    orphaned_auto_count = 0
+                    orphaned_auto_ids = set()
+                    # Also build the full set of automation IDs during this
+                    # scan to reuse for orphaned-run counting below, avoiding
+                    # a redundant second table scan.
+                    all_auto_ids = set()
+                    async for auto_id, auto_uid in stream_rows(
+                        db, Automation.id, Automation.user_id
+                    ):
+                        all_auto_ids.add(auto_id)
+                        if str(auto_uid) not in active_user_ids:
+                            orphaned_auto_count += 1
+                            orphaned_auto_ids.add(auto_id)
+                    counts["automations"] = orphaned_auto_count
+                except _TABLE_MISSING_ERRORS as e:
+                    if _is_table_missing_error(e):
+                        log.debug(f"automation table does not exist: {e}")
+                        orphaned_auto_ids = set()
+                        all_auto_ids = set()
+                    else:
+                        raise
+
+                # Count orphaned automation_runs: runs whose parent automation
+                # no longer exists OR whose parent will be deleted as orphaned.
+                # This ensures preview totals match what execution will delete.
+                #
+                # We stream run IDs and check set membership in Python to
+                # avoid SQLite's ~999 parameter limit on large instances.
+                if AutomationRun is not None:
+                    try:
+                        orphaned_run_count = 0
+                        async for _, parent_id in stream_rows(
+                            db, AutomationRun.id, AutomationRun.automation_id
+                        ):
+                            if (
+                                parent_id is None
+                                or parent_id not in all_auto_ids
+                                or parent_id in orphaned_auto_ids
+                            ):
+                                orphaned_run_count += 1
+                        counts["automation_runs"] = orphaned_run_count
+                    except _TABLE_MISSING_ERRORS as e:
+                        if _is_table_missing_error(e):
+                            log.debug(f"automation_run table does not exist: {e}")
+                        else:
+                            raise
 
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")
@@ -337,48 +398,54 @@ def count_orphaned_records(
     return counts
 
 
-def count_orphaned_chat_messages() -> int:
+async def count_orphaned_chat_messages() -> int:
     """Count orphaned chat_message rows whose parent chat no longer exists.
 
     These are left behind on SQLite because it does not enforce
     ON DELETE CASCADE unless PRAGMA foreign_keys is enabled.
     """
     try:
-        with get_db_context() as db:
-            return db.query(
-                func.count(ChatMessage.id)
-            ).filter(
-                not_(ChatMessage.chat_id.in_(select(Chat.id)))
-            ).scalar() or 0
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count(ChatMessage.id)).where(
+                    not_(ChatMessage.chat_id.in_(select(Chat.id)))
+                )
+            )
+            return result.scalar_one_or_none() or 0
     except Exception as e:
         log.debug(f"Error counting orphaned chat_messages: {e}")
         return 0
 
 
-def delete_orphaned_chat_messages() -> int:
+async def delete_orphaned_chat_messages() -> int:
     """Delete chat_message rows whose parent chat no longer exists.
 
     Returns the number of rows deleted.
     """
     try:
-        with get_db_context() as db:
-            orphaned_ids = db.query(ChatMessage.id).filter(
-                not_(ChatMessage.chat_id.in_(select(Chat.id)))
-            ).all()
-            orphan_id_list = [r.id for r in orphaned_ids]
+        async with get_async_db_context() as db:
+            # Collect orphaned IDs first
+            orphaned_ids = []
+            result = await db.execute(
+                select(ChatMessage.id).where(
+                    not_(ChatMessage.chat_id.in_(select(Chat.id)))
+                )
+            )
+            orphaned_ids = [row[0] for row in result.fetchall()]
 
-            if not orphan_id_list:
+            if not orphaned_ids:
                 return 0
 
             # Delete in batches to avoid SQLite variable limits
             deleted = 0
             batch_size = 500
-            for i in range(0, len(orphan_id_list), batch_size):
-                batch = orphan_id_list[i:i + batch_size]
-                deleted += db.query(ChatMessage).filter(
-                    ChatMessage.id.in_(batch)
-                ).delete()
-            db.commit()
+            for i in range(0, len(orphaned_ids), batch_size):
+                batch = orphaned_ids[i:i + batch_size]
+                result = await db.execute(
+                    delete(ChatMessage).where(ChatMessage.id.in_(batch))
+                )
+                deleted += result.rowcount
+            await db.commit()
 
             if deleted > 0:
                 log.info(f"Deleted {deleted} orphaned chat_message rows")
@@ -453,7 +520,7 @@ def count_audio_cache_files(max_age_days: Optional[int]) -> int:
     return count
 
 
-def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
+async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
     """
     Get all file IDs that are actively referenced by knowledge bases, chats, folders, messages, and models.
 
@@ -474,17 +541,17 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # Preload all valid file IDs to avoid N database queries during validation.
         # Stream only IDs — never load full File ORM objects (which include large
         # JSONB data/meta columns that cause OOM on large databases).
-        def _load_file_ids():
-            with get_db() as db:
-                return {str(fid) for (fid,) in stream_rows(db, File.id)}
-        all_file_ids = retry_on_db_lock(_load_file_ids)
+        async def _load_file_ids():
+            async with get_async_db() as db:
+                return {str(fid) async for (fid,) in stream_rows(db, File.id)}
+        all_file_ids = await retry_on_db_lock(_load_file_ids)
         log.debug(f"Preloaded {len(all_file_ids)} file IDs for validation")
 
         # Build active KB IDs using lightweight SQL (just id + user_id).
         # Knowledges.get_knowledge_bases() must NOT be used here — on databases
         # with many files it eager-loads File objects through the knowledge_file
         # relationship, pulling hundreds of MB of JSONB into memory.
-        kb_user_map = get_kb_user_map()
+        kb_user_map = await get_kb_user_map()
         active_kb_ids = set()
         for kb_id, user_id in kb_user_map.items():
             # CRITICAL: Skip KBs owned by inactive/deleted users to maintain
@@ -498,9 +565,9 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # Query the knowledge_file junction table directly for file IDs.
         # This replaces the N+1 pattern of Knowledges.get_files_by_id() per KB,
         # and avoids loading full File ORM objects (large JSONB data/meta columns).
-        def scan_knowledge_files():
-            with get_db() as db:
-                result = db.execute(text("SELECT knowledge_id, file_id FROM knowledge_file"))
+        async def scan_knowledge_files():
+            async with get_async_db() as db:
+                result = await db.execute(text("SELECT knowledge_id, file_id FROM knowledge_file"))
                 kf_count = 0
                 while True:
                     rows = result.fetchmany(5000)
@@ -517,7 +584,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                 log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
 
         try:
-            retry_on_db_lock(scan_knowledge_files)
+            await retry_on_db_lock(scan_knowledge_files)
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
                 log.debug(f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}")
@@ -528,9 +595,9 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # Since v0.6.41+ chat files are stored in a dedicated junction table.
         # Use fetchmany (not stream_rows) because chat_file.file_id is
         # non-unique — keyset pagination requires a unique cursor column.
-        def scan_chat_files():
-            with get_db() as db:
-                result = db.execute(text("SELECT file_id FROM chat_file"))
+        async def scan_chat_files():
+            async with get_async_db() as db:
+                result = await db.execute(text("SELECT file_id FROM chat_file"))
                 chat_file_count = 0
                 while True:
                     rows = result.fetchmany(5000)
@@ -546,7 +613,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                 log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
 
         try:
-            retry_on_db_lock(scan_chat_files)
+            await retry_on_db_lock(scan_chat_files)
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
                 log.debug(f"chat_file table does not exist (pre-v0.6.41 schema): {e}")
@@ -558,10 +625,10 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         # JSON column while newer chats use chat_file.  Skipping this when
         # chat_file is non-empty is unsafe for partially-migrated schemas.
         # Each row's JSONB can be megabytes, so use a small batch size.
-        def scan_chats():
+        async def scan_chats():
             chat_count = 0
-            with get_db() as db:
-                for chat_id, chat_dict in stream_rows(
+            async with get_async_db() as db:
+                async for chat_id, chat_dict in stream_rows(
                     db, Chat.id, Chat.chat, batch_size=50
                 ):
                     chat_count += 1
@@ -573,7 +640,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                         log.debug(f"Error processing chat {chat_id} for file references: {e}")
             return chat_count
 
-        chat_count = retry_on_db_lock(scan_chats)
+        chat_count = await retry_on_db_lock(scan_chats)
         log.debug(f"Scanned {chat_count} chats (legacy JSON) for file references")
 
         # Scan folders for file references
@@ -581,14 +648,14 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         has_folder_items = hasattr(Folder, 'items')
         has_folder_data = hasattr(Folder, 'data')
         if has_folder_items or has_folder_data:
-            def scan_folders():
-                with get_db() as db:
+            async def scan_folders():
+                async with get_async_db() as db:
                     columns = [Folder.id]
                     if has_folder_items:
                         columns.append(Folder.items)
                     if has_folder_data:
                         columns.append(Folder.data)
-                    for row in stream_rows(db, *columns, batch_size=100):
+                    async for row in stream_rows(db, *columns, batch_size=100):
                         folder_id = row[0]
                         col_idx = 1
                         if has_folder_items:
@@ -608,7 +675,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                                     log.debug(f"Error processing folder {folder_id} data: {e}")
 
             try:
-                retry_on_db_lock(scan_folders)
+                await retry_on_db_lock(scan_folders)
             except _TABLE_MISSING_ERRORS as e:
                 if _is_table_missing_error(e):
                     log.debug(f"Folder scan skipped (table missing): {e}")
@@ -619,9 +686,9 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
 
         # Scan standalone messages for file references
         if hasattr(Message, 'data'):
-            def scan_messages():
-                with get_db() as db:
-                    for message_id, message_data_dict in stream_rows(
+            async def scan_messages():
+                async with get_async_db() as db:
+                    async for message_id, message_data_dict in stream_rows(
                         db, Message.id, Message.data,
                         filter_clause=Message.data.isnot(None), batch_size=100
                     ):
@@ -632,7 +699,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                                 log.debug(f"Error processing message {message_id} data: {e}")
 
             try:
-                retry_on_db_lock(scan_messages)
+                await retry_on_db_lock(scan_messages)
             except _TABLE_MISSING_ERRORS as e:
                 if _is_table_missing_error(e):
                     log.debug(f"Message scan skipped (table missing): {e}")
@@ -645,15 +712,15 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
         has_model_params = hasattr(Model, 'params')
         has_model_meta = hasattr(Model, 'meta')
         if has_model_params or has_model_meta:
-            def scan_models():
-                with get_db() as db:
+            async def scan_models():
+                async with get_async_db() as db:
                     columns = [Model.id]
                     if has_model_params:
                         columns.append(Model.params)
                     if has_model_meta:
                         columns.append(Model.meta)
                     model_count = 0
-                    for row in stream_rows(db, *columns, batch_size=100):
+                    async for row in stream_rows(db, *columns, batch_size=100):
                         model_count += 1
                         model_id = row[0]
                         col_idx = 1
@@ -675,7 +742,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
                     log.debug(f"Scanned {model_count} models for file references")
 
             try:
-                retry_on_db_lock(scan_models)
+                await retry_on_db_lock(scan_models)
             except _TABLE_MISSING_ERRORS as e:
                 if _is_table_missing_error(e):
                     log.debug(f"Model scan skipped (table missing): {e}")
@@ -693,7 +760,7 @@ def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
     return active_file_ids
 
 
-def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] = None) -> bool:
+async def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[AsyncSession] = None) -> bool:
     """
     Safely delete a file record and its associated vector collections and physical storage.
 
@@ -712,15 +779,15 @@ def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] =
         True if deletion succeeded, False otherwise
     """
     try:
-        with get_db_context(db) as session:
-            file_record = Files.get_file_by_id(file_id, db=session)
+        async with get_async_db_context(db) as session:
+            file_record = await Files.get_file_by_id(file_id, db=session)
             if not file_record:
                 return True
 
             # Clean KB vector embeddings (mirrors delete_file_by_id endpoint logic)
             # This removes embeddings from knowledge base collections that reference this file
             try:
-                knowledges = Knowledges.get_knowledges_by_file_id(file_id, db=session)
+                knowledges = await Knowledges.get_knowledges_by_file_id(file_id, db=session)
                 for kb in knowledges:
                     try:
                         # Delete by file_id filter
@@ -738,7 +805,7 @@ def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] =
             vector_cleaner.delete_collection(collection_name)
 
             # Delete from DB - CASCADE handles chat_file, channel_file, knowledge_file
-            Files.delete_file_by_id(file_id, db=session)
+            await Files.delete_file_by_id(file_id, db=session)
 
             # Delete physical file from storage
             if file_record.path:
@@ -754,7 +821,7 @@ def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Session] =
         return False
 
 
-def delete_user_files(user_id: str, vector_cleaner, db: Optional[Session] = None) -> int:
+async def delete_user_files(user_id: str, vector_cleaner, db: Optional[AsyncSession] = None) -> int:
     """
     Delete all files owned by a user.
 
@@ -771,11 +838,11 @@ def delete_user_files(user_id: str, vector_cleaner, db: Optional[Session] = None
     """
     deleted_count = 0
     try:
-        files = Files.get_files_by_user_id(user_id, db=db)
+        files = await Files.get_files_by_user_id(user_id, db=db)
         log.debug(f"Found {len(files)} files for user {user_id}")
 
         for file in files:
-            if safe_delete_file_by_id(file.id, vector_cleaner, db=db):
+            if await safe_delete_file_by_id(file.id, vector_cleaner, db=db):
                 deleted_count += 1
 
         if deleted_count > 0:
@@ -838,7 +905,7 @@ def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
     return deleted_count
 
 
-def delete_inactive_users(
+async def delete_inactive_users(
     inactive_days: int,
     vector_cleaner=None,
     exempt_admin: bool = True,
@@ -869,7 +936,7 @@ def delete_inactive_users(
         users_to_delete = []
 
         # Get all users and check activity
-        all_users = Users.get_users()["users"]
+        all_users = (await Users.get_users())["users"]
 
         for user in all_users:
             # Skip if user is exempt
@@ -883,17 +950,29 @@ def delete_inactive_users(
                 users_to_delete.append(user)
 
         # Delete inactive users with shared database session
-        with get_db() as db:
+        async with get_async_db() as db:
             for user in users_to_delete:
                 try:
-                    # Delete user's files first (if vector_cleaner provided)
-                    # This ensures proper cleanup of embeddings, physical storage, etc.
-                    if vector_cleaner is not None:
-                        files_deleted = delete_user_files(user.id, vector_cleaner, db=db)
-                        total_files_deleted += files_deleted
+                    # Track files per-user so we only count them if the
+                    # savepoint commits successfully.
+                    user_files_deleted = 0
 
-                    # Delete the user - CASCADE handles remaining associations
-                    Users.delete_user_by_id(user.id, db=db)
+                    # Use a savepoint so a per-user failure only rolls back
+                    # that user's changes, not earlier successful deletions.
+                    async with db.begin_nested():
+                        # Delete user's files first (if vector_cleaner provided)
+                        # This ensures proper cleanup of embeddings, physical storage, etc.
+                        if vector_cleaner is not None:
+                            user_files_deleted = await delete_user_files(user.id, vector_cleaner, db=db)
+
+                        # Delete user's automations and their runs
+                        await delete_user_automations(user.id, db=db)
+
+                        # Delete the user - CASCADE handles remaining associations
+                        await Users.delete_user_by_id(user.id, db=db)
+
+                    # Savepoint committed — safe to count
+                    total_files_deleted += user_files_deleted
                     deleted_count += 1
                     log.info(
                         f"Deleted inactive user: {user.email} (last active: {user.last_active_at})"
@@ -908,6 +987,242 @@ def delete_inactive_users(
         log.info(f"Total files deleted from inactive users: {total_files_deleted}")
 
     return deleted_count
+
+
+async def delete_user_automations(user_id: str, db: Optional[AsyncSession] = None) -> int:
+    """
+    Delete all automations and their runs for a given user.
+
+    Called during user deletion to ensure automation data is cleaned up
+    before the user row is removed.
+
+    Args:
+        user_id: The user ID whose automations should be deleted
+        db: Optional database session to reuse
+
+    Returns:
+        Number of automations deleted
+    """
+    if Automation is None:
+        return 0
+
+    owns_session = db is None
+    deleted_count = 0
+    try:
+        async with get_async_db_context(db) as session:
+            result = await session.execute(
+                select(Automation.id).where(Automation.user_id == user_id)
+            )
+            automation_ids = [row[0] for row in result.fetchall()]
+
+            if not automation_ids:
+                return 0
+
+            # Delete runs for these automations first (batched for SQLite)
+            batch_size = 500
+            if AutomationRun is not None:
+                runs_deleted = 0
+                for i in range(0, len(automation_ids), batch_size):
+                    batch = automation_ids[i:i + batch_size]
+                    result = await session.execute(
+                        delete(AutomationRun).where(
+                            AutomationRun.automation_id.in_(batch)
+                        )
+                    )
+                    runs_deleted += result.rowcount
+            else:
+                log.warning("AutomationRun model not available, skipping run cleanup")
+                runs_deleted = 0
+
+            # Delete the automations themselves
+            result = await session.execute(
+                delete(Automation).where(Automation.user_id == user_id)
+            )
+            deleted_count = result.rowcount
+
+            # Only commit if we own the session; let the caller commit otherwise
+            if owns_session:
+                await session.commit()
+
+            if deleted_count > 0:
+                log.info(
+                    f"Deleted {deleted_count} automations and "
+                    f"{runs_deleted} automation runs for user {user_id}"
+                )
+
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"Automation tables do not exist: {e}")
+        elif not owns_session:
+            raise  # Let caller handle transaction policy
+        else:
+            log.warning(f"Error deleting automations for user {user_id}: {e}")
+    except Exception as e:
+        if not owns_session:
+            raise  # Let caller handle transaction policy
+        log.warning(f"Error deleting automations for user {user_id}: {e}")
+
+    return deleted_count
+
+
+async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
+    """
+    Delete automation rows whose owner user no longer exists.
+
+    Also deletes associated automation_run rows (best-effort) to avoid
+    leaving doubly-orphaned records.  If the automation_run table is
+    missing or inaccessible, automation deletion still proceeds.
+
+    Uses stream-and-batch-delete to avoid materializing all orphaned IDs
+    in memory at once, preserving scalability on large instances.
+
+    Args:
+        active_user_ids: Set of user IDs that still exist
+
+    Returns:
+        Number of automations deleted
+
+    Raises:
+        Exception on operational errors (non-table-missing)
+    """
+    if Automation is None:
+        return 0
+
+    batch_size = 500
+
+    async def _delete_runs_for_batch(db, batch: list) -> int:
+        """Best-effort deletion of automation runs for a batch of automation IDs.
+
+        Returns the number of runs deleted.  If the automation_run table
+        does not exist, logs a debug message and returns 0 so automation
+        deletion can proceed.
+        """
+        if AutomationRun is None:
+            return 0
+        try:
+            result = await db.execute(
+                delete(AutomationRun).where(
+                    AutomationRun.automation_id.in_(batch)
+                )
+            )
+            return result.rowcount
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
+                log.debug(f"automation_run table not available, skipping run cleanup: {e}")
+                return 0
+            raise
+
+    try:
+        async with get_async_db_context() as db:
+            # Stream-and-batch: accumulate IDs up to batch_size, then flush
+            # a DELETE before accumulating the next batch.
+            total_autos_deleted = 0
+            total_runs_deleted = 0
+            batch = []
+
+            async for auto_id, auto_uid in stream_rows(
+                db, Automation.id, Automation.user_id
+            ):
+                if str(auto_uid) not in active_user_ids:
+                    batch.append(str(auto_id))
+
+                if len(batch) >= batch_size:
+                    # Flush: delete runs first (best-effort), then automations
+                    total_runs_deleted += await _delete_runs_for_batch(db, batch)
+                    result = await db.execute(
+                        delete(Automation).where(Automation.id.in_(batch))
+                    )
+                    total_autos_deleted += result.rowcount
+                    batch.clear()
+
+            # Flush remaining batch
+            if batch:
+                total_runs_deleted += await _delete_runs_for_batch(db, batch)
+                result = await db.execute(
+                    delete(Automation).where(Automation.id.in_(batch))
+                )
+                total_autos_deleted += result.rowcount
+
+            await db.commit()
+
+            if total_autos_deleted > 0:
+                log.info(
+                    f"Deleted {total_autos_deleted} orphaned automations and "
+                    f"{total_runs_deleted} associated automation runs"
+                )
+            return total_autos_deleted
+
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"Automation table does not exist: {e}")
+            return 0
+        raise
+
+
+async def delete_orphaned_automation_runs() -> int:
+    """
+    Delete automation_run rows whose parent automation no longer exists.
+
+    These can be left behind if an automation was deleted without cleaning
+    up its runs, or on SQLite where FK CASCADE is not enforced.
+
+    Uses stream-and-batch-delete to avoid materializing all orphaned IDs
+    in memory at once.
+
+    Returns:
+        Number of automation_run rows deleted
+
+    Raises:
+        Exception on operational errors (non-table-missing)
+    """
+    if AutomationRun is None or Automation is None:
+        return 0
+
+    batch_size = 500
+
+    try:
+        async with get_async_db_context() as db:
+            # Build the set of valid automation IDs for fast lookup.
+            # Automation IDs are few relative to runs, so this is safe.
+            valid_auto_ids = set()
+            async for (aid,) in stream_rows(db, Automation.id):
+                valid_auto_ids.add(aid)
+
+            # Stream runs and batch-delete orphans on-the-fly
+            deleted = 0
+            batch = []
+
+            async for run_id, parent_id in stream_rows(
+                db, AutomationRun.id, AutomationRun.automation_id
+            ):
+                if parent_id is None or parent_id not in valid_auto_ids:
+                    batch.append(str(run_id))
+
+                if len(batch) >= batch_size:
+                    result = await db.execute(
+                        delete(AutomationRun).where(AutomationRun.id.in_(batch))
+                    )
+                    deleted += result.rowcount
+                    batch.clear()
+
+            # Flush remaining batch
+            if batch:
+                result = await db.execute(
+                    delete(AutomationRun).where(AutomationRun.id.in_(batch))
+                )
+                deleted += result.rowcount
+
+            await db.commit()
+
+            if deleted > 0:
+                log.info(f"Deleted {deleted} orphaned automation_run rows")
+            return deleted
+
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"Automation tables do not exist: {e}")
+            return 0
+        raise
 
 
 def cleanup_audio_cache(max_age_days: Optional[int] = 30) -> int:
