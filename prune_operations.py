@@ -953,14 +953,17 @@ async def delete_inactive_users(
         async with get_async_db() as db:
             for user in users_to_delete:
                 try:
+                    # Track files per-user so we only count them if the
+                    # savepoint commits successfully.
+                    user_files_deleted = 0
+
                     # Use a savepoint so a per-user failure only rolls back
                     # that user's changes, not earlier successful deletions.
                     async with db.begin_nested():
                         # Delete user's files first (if vector_cleaner provided)
                         # This ensures proper cleanup of embeddings, physical storage, etc.
                         if vector_cleaner is not None:
-                            files_deleted = await delete_user_files(user.id, vector_cleaner, db=db)
-                            total_files_deleted += files_deleted
+                            user_files_deleted = await delete_user_files(user.id, vector_cleaner, db=db)
 
                         # Delete user's automations and their runs
                         await delete_user_automations(user.id, db=db)
@@ -968,6 +971,8 @@ async def delete_inactive_users(
                         # Delete the user - CASCADE handles remaining associations
                         await Users.delete_user_by_id(user.id, db=db)
 
+                    # Savepoint committed — safe to count
+                    total_files_deleted += user_files_deleted
                     deleted_count += 1
                     log.info(
                         f"Deleted inactive user: {user.email} (last active: {user.last_active_at})"
