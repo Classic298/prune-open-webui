@@ -117,9 +117,6 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.skills import Skill, Skills
     from open_webui.models.folders import Folder, Folders, FolderModel
     from open_webui.internal.db import get_async_db, get_async_db_context
-    # Sync engine — used exclusively for VACUUM (a DDL command that cannot
-    # run inside an async transaction).  Aliased to avoid confusion.
-    from open_webui.internal.db import engine as sync_engine
     from open_webui.config import CACHE_DIR
     from open_webui.storage.provider import Storage
 
@@ -164,9 +161,6 @@ elif _import_strategy == "git":
     from backend.open_webui.models.skills import Skill, Skills
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
     from backend.open_webui.internal.db import get_async_db, get_async_db_context
-    # Sync engine — used exclusively for VACUUM (a DDL command that cannot
-    # run inside an async transaction).  Aliased to avoid confusion.
-    from backend.open_webui.internal.db import engine as sync_engine
     from backend.open_webui.config import CACHE_DIR
     from backend.open_webui.storage.provider import Storage
 
@@ -194,6 +188,21 @@ elif _import_strategy == "git":
         ENABLE_QDRANT_MULTITENANCY_MODE,
         ENABLE_MILVUS_MULTITENANCY_MODE,
     )
+
+
+def get_sync_engine():
+    """Lazy resolver for the sync engine.
+
+    The sync engine is only needed for VACUUM (a DDL command that cannot
+    run inside an async transaction).  Importing it lazily means that
+    non-VACUUM operations (dry-run, preview, export) remain usable even
+    if the target Open WebUI build does not expose 'engine'.
+    """
+    if _import_strategy == "git":
+        from backend.open_webui.internal.db import engine
+    else:
+        from open_webui.internal.db import engine
+    return engine
 
 
 # Export all for easy importing
@@ -230,7 +239,7 @@ __all__ = [
     'Storage',
     'get_async_db',
     'get_async_db_context',
-    'sync_engine',
+    'get_sync_engine',
     'CACHE_DIR',
     'VECTOR_DB_CLIENT',
     'VECTOR_DB',
