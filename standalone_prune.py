@@ -855,31 +855,18 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Optimizing database with VACUUM (this may take a while and lock the database)")
 
             try:
-                db_url = str(sync_engine.url)
-                # Get a raw connection and explicitly detach it from the
-                # pool after VACUUM so the altered autocommit/isolation
-                # state is never returned and reused.
-                pool_conn = sync_engine.pool.connect()
-                raw_conn = pool_conn.dbapi_connection
-                try:
-                    if 'postgresql' in db_url:
-                        # PostgreSQL: VACUUM requires AUTOCOMMIT isolation
-                        raw_conn.set_isolation_level(0)
-                        cursor = raw_conn.cursor()
-                        cursor.execute("VACUUM ANALYZE")
-                        cursor.close()
+                # Use the public engine.connect() API with a per-connection
+                # isolation level override.  This avoids touching pool
+                # internals and is stable across SQLAlchemy versions.
+                with sync_engine.connect().execution_options(
+                    isolation_level="AUTOCOMMIT"
+                ) as conn:
+                    if 'postgresql' in str(sync_engine.url):
+                        conn.execute(text("VACUUM ANALYZE"))
                         log.info("Vacuumed PostgreSQL main database")
                     else:
-                        # SQLite: VACUUM cannot run inside BEGIN/COMMIT.
-                        raw_conn.isolation_level = None
-                        raw_conn.execute("VACUUM")
+                        conn.execute(text("VACUUM"))
                         log.info("Vacuumed SQLite main database")
-                finally:
-                    # Detach from pool — prevents reuse with altered state.
-                    # close() on a detached proxy closes the DBAPI connection
-                    # directly and cleans up all pool bookkeeping.
-                    pool_conn.detach()
-                    pool_conn.close()
             except Exception as e:
                 log.error(f"Failed to vacuum main database: {e}")
 
@@ -897,17 +884,11 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             ):
                 try:
                     pg_engine = vector_cleaner.session.get_bind()
-                    pg_pool_conn = pg_engine.pool.connect()
-                    pg_raw = pg_pool_conn.dbapi_connection
-                    try:
-                        pg_raw.set_isolation_level(0)  # AUTOCOMMIT
-                        cursor = pg_raw.cursor()
-                        cursor.execute("VACUUM ANALYZE")
-                        cursor.close()
+                    with pg_engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT"
+                    ) as pg_conn:
+                        pg_conn.execute(text("VACUUM ANALYZE"))
                         log.info("Executed VACUUM ANALYZE on PostgreSQL vector database")
-                    finally:
-                        pg_pool_conn.detach()
-                        pg_pool_conn.close()
                 except Exception as e:
                     log.error(f"Failed to vacuum PostgreSQL vector database: {e}")
         else:
