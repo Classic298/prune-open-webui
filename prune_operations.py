@@ -342,41 +342,50 @@ async def count_orphaned_records(
                     else:
                         raise
 
-            # Count orphaned automations
-            if Automation is not None:
+            # Count orphaned automations and their runs
+            if form_data.delete_orphaned_automations and Automation is not None:
                 try:
                     orphaned_auto_count = 0
+                    orphaned_auto_ids = set()
                     async for auto_id, auto_uid in stream_rows(
                         db, Automation.id, Automation.user_id
                     ):
                         if str(auto_uid) not in active_user_ids:
                             orphaned_auto_count += 1
+                            orphaned_auto_ids.add(auto_id)
                     counts["automations"] = orphaned_auto_count
                 except _TABLE_MISSING_ERRORS as e:
                     if _is_table_missing_error(e):
                         log.debug(f"automation table does not exist: {e}")
+                        orphaned_auto_ids = set()
                     else:
                         raise
 
-            # Count orphaned automation_runs
-            if AutomationRun is not None and Automation is not None:
-                try:
-                    result = await db.execute(
-                        select(func.count(AutomationRun.id)).where(
-                            or_(
-                                AutomationRun.automation_id.is_(None),
-                                not_(AutomationRun.automation_id.in_(
-                                    select(Automation.id)
-                                ))
+                # Count orphaned automation_runs: runs whose parent automation
+                # no longer exists OR whose parent will be deleted as orphaned.
+                # This ensures preview totals match what execution will delete.
+                if AutomationRun is not None:
+                    try:
+                        result = await db.execute(
+                            select(func.count(AutomationRun.id)).where(
+                                or_(
+                                    AutomationRun.automation_id.is_(None),
+                                    not_(AutomationRun.automation_id.in_(
+                                        select(Automation.id)
+                                    )),
+                                    *(
+                                        [AutomationRun.automation_id.in_(orphaned_auto_ids)]
+                                        if orphaned_auto_ids else []
+                                    ),
+                                )
                             )
                         )
-                    )
-                    counts["automation_runs"] = result.scalar_one_or_none() or 0
-                except _TABLE_MISSING_ERRORS as e:
-                    if _is_table_missing_error(e):
-                        log.debug(f"automation_run table does not exist: {e}")
-                    else:
-                        raise
+                        counts["automation_runs"] = result.scalar_one_or_none() or 0
+                    except _TABLE_MISSING_ERRORS as e:
+                        if _is_table_missing_error(e):
+                            log.debug(f"automation_run table does not exist: {e}")
+                        else:
+                            raise
 
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")

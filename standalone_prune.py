@@ -301,6 +301,18 @@ Safety Features:
         dest='delete_orphaned_chat_messages',
         help='Skip orphaned chat_message deletion'
     )
+    parser.add_argument(
+        '--delete-orphaned-automations',
+        action='store_true',
+        default=True,
+        help='Delete orphaned automations and their run history from deleted users (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-automations',
+        action='store_false',
+        dest='delete_orphaned_automations',
+        help='Skip orphaned automation deletion'
+    )
 
     # Audio cache cleanup
     parser.add_argument(
@@ -388,6 +400,7 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_notes=args.delete_orphaned_notes,
         delete_orphaned_folders=args.delete_orphaned_folders,
         delete_orphaned_chat_messages=args.delete_orphaned_chat_messages,
+        delete_orphaned_automations=args.delete_orphaned_automations,
         audio_cache_max_age_days=args.audio_cache_max_age_days,
         delete_inactive_users_days=args.delete_inactive_users_days,
         exempt_admin_users=args.exempt_admin_users,
@@ -451,6 +464,15 @@ def print_preview_results(result: PrunePreviewResult):
         print(f"\n📂 Folders:")
         print(f"   {result.orphaned_folders} orphaned folders")
         total_items += result.orphaned_folders
+
+    automation_total = result.orphaned_automations + result.orphaned_automation_runs
+    if automation_total > 0:
+        print(f"\n⚙️  Automations:")
+        if result.orphaned_automations > 0:
+            print(f"   {result.orphaned_automations} orphaned automations")
+        if result.orphaned_automation_runs > 0:
+            print(f"   {result.orphaned_automation_runs} orphaned automation runs")
+        total_items += automation_total
 
     if result.orphaned_uploads > 0 or result.orphaned_vector_collections > 0:
         print(f"\n💾 Storage:")
