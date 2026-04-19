@@ -512,7 +512,7 @@ class InteractivePruneUI:
                     orphaned_notes=orphaned_counts["notes"],
                     orphaned_skills=orphaned_counts["skills"],
                     orphaned_folders=orphaned_counts["folders"],
-                    orphaned_uploads=count_orphaned_uploads(self._active_file_ids),
+                    orphaned_uploads=await count_orphaned_uploads(self._active_file_ids),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
                         self._active_file_ids, self._active_kb_ids, self._active_user_ids
                     ),
@@ -877,7 +877,7 @@ class InteractivePruneUI:
             progress.update(task, completed=True)
 
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
-            deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
+            deleted_uploads = await cleanup_orphaned_uploads(active_file_ids)
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_uploads} orphaned upload files")
 

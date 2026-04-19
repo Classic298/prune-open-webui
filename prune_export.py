@@ -38,7 +38,7 @@ except ImportError as e:
 
 from prune_models import PruneDataForm, PrunePreviewResult
 from prune_core import VectorDatabaseCleaner
-from prune_operations import get_all_folders, stream_rows
+from prune_operations import get_all_folders, stream_rows, iter_storage_objects, _get_active_file_paths
 
 
 # Row format for the exported CSV
@@ -333,48 +333,20 @@ class PreviewExporter:
                 log.debug(f"Error iterating orphaned folders: {e}")
 
     async def _iter_orphaned_uploads(self) -> AsyncGenerator[ExportRow, None]:
-        """Yield ExportRow for each orphaned physical upload file."""
-        upload_dir = Path(CACHE_DIR).parent / "uploads"
-        if not upload_dir.exists():
-            return
-
+        """Yield ExportRow for each orphaned storage object (local/S3/GCS/Azure)."""
         try:
-            for file_path in upload_dir.iterdir():
-                if not file_path.is_file():
+            active_paths = await _get_active_file_paths(self.active_file_ids)
+            for ref, name, size in iter_storage_objects():
+                if ref in active_paths:
                     continue
-
-                filename = file_path.name
-                file_id = None
-
-                # Extract file ID from filename patterns
-                if len(filename) > 36:
-                    potential_id = filename[:36]
-                    if potential_id.count("-") == 4:
-                        file_id = potential_id
-
-                if not file_id and filename.count("-") == 4 and len(filename) == 36:
-                    file_id = filename
-
-                if not file_id:
-                    for active_id in self.active_file_ids:
-                        if active_id in filename:
-                            file_id = active_id
-                            break
-
-                if file_id and file_id not in self.active_file_ids:
-                    try:
-                        file_size = file_path.stat().st_size
-                    except OSError:
-                        file_size = ""
-
-                    yield ExportRow(
-                        category="orphaned_upload",
-                        id=file_id,
-                        name=str(file_path),
-                        owner_id="",
-                        size_bytes=file_size,
-                        reason="no matching DB record",
-                    )
+                yield ExportRow(
+                    category="orphaned_upload",
+                    id="",
+                    name=ref,
+                    owner_id="",
+                    size_bytes=size if size is not None else "",
+                    reason="no matching active File.path",
+                )
         except Exception as e:
             log.debug(f"Error iterating orphaned uploads: {e}")
 

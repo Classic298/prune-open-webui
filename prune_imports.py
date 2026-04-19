@@ -117,8 +117,13 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.skills import Skill, Skills
     from open_webui.models.folders import Folder, Folders, FolderModel
     from open_webui.internal.db import get_async_db, get_async_db_context
-    from open_webui.config import CACHE_DIR
+    from open_webui.config import CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER
     from open_webui.storage.provider import Storage
+
+    try:
+        from open_webui.config import S3_KEY_PREFIX
+    except ImportError:
+        S3_KEY_PREFIX = ''
 
     # Core ORM models — needed for cleanup queries
     try:
@@ -161,8 +166,13 @@ elif _import_strategy == "git":
     from backend.open_webui.models.skills import Skill, Skills
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
     from backend.open_webui.internal.db import get_async_db, get_async_db_context
-    from backend.open_webui.config import CACHE_DIR
+    from backend.open_webui.config import CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER
     from backend.open_webui.storage.provider import Storage
+
+    try:
+        from backend.open_webui.config import S3_KEY_PREFIX
+    except ImportError:
+        S3_KEY_PREFIX = ''
 
     # Core ORM models — needed for cleanup queries
     try:
@@ -241,6 +251,9 @@ __all__ = [
     'get_async_db_context',
     'get_sync_engine',
     'CACHE_DIR',
+    'UPLOAD_DIR',
+    'STORAGE_PROVIDER',
+    'S3_KEY_PREFIX',
     'VECTOR_DB_CLIENT',
     'VECTOR_DB',
     'ENABLE_QDRANT_MULTITENANCY_MODE',

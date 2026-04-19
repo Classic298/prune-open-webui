@@ -555,7 +555,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 orphaned_notes=orphaned_counts["notes"],
                 orphaned_skills=orphaned_counts["skills"],
                 orphaned_folders=orphaned_counts["folders"],
-                orphaned_uploads=count_orphaned_uploads(active_file_ids),
+                orphaned_uploads=await count_orphaned_uploads(active_file_ids),
                 orphaned_vector_collections=vector_cleaner.count_orphaned_collections(
                     active_file_ids, active_kb_ids, active_user_ids
                 ),
@@ -826,7 +826,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         log.info("Cleaning up orphaned physical files")
 
-        deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
+        deleted_uploads = await cleanup_orphaned_uploads(active_file_ids)
         if deleted_uploads > 0:
             log.info(f"Deleted {deleted_uploads} orphaned upload files")
 

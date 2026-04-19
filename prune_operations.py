@@ -10,7 +10,7 @@ import inspect
 import logging
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Optional, Set, Callable, Any
+from typing import AsyncGenerator, Iterator, Optional, Set, Tuple, Callable, Any
 from sqlalchemy import select, text, func, and_, or_, not_, delete
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,7 +131,8 @@ try:
         Function, Functions, Tool, Tools, Skill, Skills,
         Automation, AutomationRun, Automations, AutomationRuns,
         Folder, Folders, FolderModel, Storage,
-        get_async_db, get_async_db_context, CACHE_DIR
+        get_async_db, get_async_db_context,
+        CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER, S3_KEY_PREFIX,
     )
 except ImportError as e:
     log.error(f"Failed to import Open WebUI modules: {e}")
@@ -455,41 +456,102 @@ async def delete_orphaned_chat_messages() -> int:
         return 0
 
 
-def count_orphaned_uploads(active_file_ids: Set[str]) -> int:
-    """Count orphaned files in uploads directory."""
-    upload_dir = Path(CACHE_DIR).parent / "uploads"
-    if not upload_dir.exists():
-        return 0
+def iter_storage_objects() -> Iterator[Tuple[str, str, Optional[int]]]:
+    """
+    Yield (ref, display_name, size_bytes) for every object in the configured
+    storage backend. `ref` matches the format stored in File.path and is safe
+    to pass to Storage.delete_file().
 
+    size_bytes is best-effort — may be None for remote backends where listing
+    pages don't include a byte count (or it's expensive to fetch per-object).
+    """
+    provider = (STORAGE_PROVIDER or "local").lower()
+
+    if provider == "local":
+        upload_dir = Path(UPLOAD_DIR) if UPLOAD_DIR else (Path(CACHE_DIR).parent / "uploads")
+        if not upload_dir.exists():
+            return
+        for p in upload_dir.iterdir():
+            if not p.is_file():
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = None
+            yield (str(p), p.name, size)
+        return
+
+    if provider == "s3":
+        # Reuse the already-configured boto3 client on the Storage singleton.
+        bucket = Storage.bucket_name
+        key_prefix = S3_KEY_PREFIX or ""
+        paginator = Storage.s3_client.get_paginator("list_objects_v2")
+        paginate_kwargs = {"Bucket": bucket}
+        if key_prefix:
+            paginate_kwargs["Prefix"] = key_prefix
+        for page in paginator.paginate(**paginate_kwargs):
+            for obj in page.get("Contents", []) or []:
+                key = obj["Key"]
+                # Mirrors the safety check in S3StorageProvider.delete_all_files
+                if key_prefix and not key.startswith(key_prefix):
+                    continue
+                yield (f"s3://{bucket}/{key}", key.rsplit("/", 1)[-1], obj.get("Size"))
+        return
+
+    if provider == "gcs":
+        bucket_name = Storage.bucket_name
+        for blob in Storage.bucket.list_blobs():
+            yield (f"gs://{bucket_name}/{blob.name}", blob.name, getattr(blob, "size", None))
+        return
+
+    if provider == "azure":
+        endpoint = Storage.endpoint
+        container = Storage.container_name
+        for blob in Storage.container_client.list_blobs():
+            size = None
+            try:
+                size = blob.size
+            except AttributeError:
+                pass
+            yield (f"{endpoint}/{container}/{blob.name}", blob.name, size)
+        return
+
+    log.warning(f"Unknown STORAGE_PROVIDER '{provider}' — orphan storage scan skipped")
+
+
+async def _get_active_file_paths(active_file_ids: Set[str]) -> Set[str]:
+    """Fetch File.path values for the given active file IDs."""
+    if not active_file_ids:
+        return set()
+    try:
+        async with get_async_db_context() as db:
+            active_paths: Set[str] = set()
+            ids_list = list(active_file_ids)
+            batch_size = 1000
+            for i in range(0, len(ids_list), batch_size):
+                batch = ids_list[i:i + batch_size]
+                result = await db.execute(
+                    select(File.path).where(File.id.in_(batch))
+                )
+                for (path,) in result:
+                    if path:
+                        active_paths.add(path)
+            return active_paths
+    except Exception as e:
+        log.error(f"Failed to fetch active file paths: {e}")
+        return set()
+
+
+async def count_orphaned_uploads(active_file_ids: Set[str]) -> int:
+    """Count orphaned objects in the configured storage backend (local/S3/GCS/Azure)."""
+    active_paths = await _get_active_file_paths(active_file_ids)
     count = 0
     try:
-        for file_path in upload_dir.iterdir():
-            if not file_path.is_file():
-                continue
-
-            filename = file_path.name
-            file_id = None
-
-            # Extract file ID from filename patterns
-            if len(filename) > 36:
-                potential_id = filename[:36]
-                if potential_id.count("-") == 4:
-                    file_id = potential_id
-
-            if not file_id and filename.count("-") == 4 and len(filename) == 36:
-                file_id = filename
-
-            if not file_id:
-                for active_id in active_file_ids:
-                    if active_id in filename:
-                        file_id = active_id
-                        break
-
-            if file_id and file_id not in active_file_ids:
+        for ref, _name, _size in iter_storage_objects():
+            if ref not in active_paths:
                 count += 1
     except Exception as e:
-        log.debug(f"Error counting orphaned uploads: {e}")
-
+        log.debug(f"Error counting orphaned storage objects: {e}")
     return count
 
 
@@ -854,53 +916,31 @@ async def delete_user_files(user_id: str, vector_cleaner, db: Optional[AsyncSess
     return deleted_count
 
 
-def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
+async def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
     """
-    Clean up orphaned files in the uploads directory.
+    Delete orphaned objects from the configured storage backend
+    (local/S3/GCS/Azure). An object is orphaned when its storage ref does
+    not match any active File.path in the database.
 
-    Returns the number of files deleted.
+    Returns the number of objects deleted.
     """
-    upload_dir = Path(CACHE_DIR).parent / "uploads"
-    if not upload_dir.exists():
-        return 0
-
+    active_paths = await _get_active_file_paths(active_file_ids)
     deleted_count = 0
 
     try:
-        for file_path in upload_dir.iterdir():
-            if not file_path.is_file():
+        for ref, name, _size in iter_storage_objects():
+            if ref in active_paths:
                 continue
-
-            filename = file_path.name
-            file_id = None
-
-            # Extract file ID from filename patterns
-            if len(filename) > 36:
-                potential_id = filename[:36]
-                if potential_id.count("-") == 4:
-                    file_id = potential_id
-
-            if not file_id and filename.count("-") == 4 and len(filename) == 36:
-                file_id = filename
-
-            if not file_id:
-                for active_id in active_file_ids:
-                    if active_id in filename:
-                        file_id = active_id
-                        break
-
-            if file_id and file_id not in active_file_ids:
-                try:
-                    file_path.unlink()
-                    deleted_count += 1
-                except Exception as e:
-                    log.error(f"Failed to delete upload file {filename}: {e}")
-
+            try:
+                await asyncio.to_thread(Storage.delete_file, ref)
+                deleted_count += 1
+            except Exception as e:
+                log.error(f"Failed to delete storage object {name}: {e}")
     except Exception as e:
-        log.error(f"Error cleaning uploads directory: {e}")
+        log.error(f"Error scanning storage for orphans: {e}")
 
     if deleted_count > 0:
-        log.info(f"Deleted {deleted_count} orphaned upload files")
+        log.info(f"Deleted {deleted_count} orphaned storage objects")
 
     return deleted_count
 
