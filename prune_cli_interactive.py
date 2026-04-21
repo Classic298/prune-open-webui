@@ -9,6 +9,7 @@ Requires: rich library for terminal UI
   pip install rich
 """
 
+import asyncio
 import sys
 import os
 import logging
@@ -52,13 +53,16 @@ try:
         delete_inactive_users,
         cleanup_audio_cache,
         delete_orphaned_chat_messages,
+        delete_orphaned_automations,
+        delete_orphaned_automation_runs,
         stream_rows,
     )
     # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
     from prune_imports import (
         Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Skills, Folders, get_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
-        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE
+        Tools, Skills, Folders, get_async_db, CACHE_DIR, VECTOR_DB_CLIENT, VECTOR_DB,
+        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE,
+        get_sync_engine,
     )
     import time
     import sqlite3
@@ -86,7 +90,7 @@ class InteractivePruneUI:
         self._active_kb_ids = set()
         self._active_user_ids = set()
 
-    def _get_all_folders_safe(self, db=None):
+    async def _get_all_folders_safe(self, db=None):
         """
         Safely get all folders using compatibility helper.
         Handles API changes between Open WebUI versions.
@@ -94,14 +98,14 @@ class InteractivePruneUI:
         Args:
             db: Optional database session to reuse
         """
-        return get_all_folders(db=db)
+        return await get_all_folders(db=db)
 
-    def run(self):
+    async def run(self):
         """Main entry point for interactive UI."""
         self.show_welcome()
 
         # Check environment
-        if not self.check_environment():
+        if not await self.check_environment():
             return 1
 
         # Initialize prune lock
@@ -114,10 +118,10 @@ class InteractivePruneUI:
             if action == "configure":
                 self.configure_settings()
             elif action == "preview":
-                self.run_preview()
+                await self.run_preview()
             elif action == "execute":
                 if self.confirm_execution():
-                    self.run_execution()
+                    await self.run_execution()
             elif action == "help":
                 self.show_help()
             elif action == "exit":
@@ -135,13 +139,13 @@ class InteractivePruneUI:
         ))
         console.print()
 
-    def check_environment(self) -> bool:
+    async def check_environment(self) -> bool:
         """Check if environment is properly configured."""
         console.print("[bold]Checking environment...[/bold]")
 
         try:
             # Check database connection
-            users = Users.get_users()
+            users = await Users.get_users()
             console.print(f"[green]✓[/green] Database connection successful ({len(users['users'])} users found)")
 
             # Initialize vector cleaner
@@ -328,6 +332,7 @@ class InteractivePruneUI:
             ("Models", "delete_orphaned_models", "Custom model configs"),
             ("Notes", "delete_orphaned_notes", "User notes"),
             ("Skills", "delete_orphaned_skills", "Custom skills"),
+            ("Automations", "delete_orphaned_automations", "Scheduled automations and their run history"),
             ("Chat Messages", "delete_orphaned_chat_messages", "Analytics data from deleted chats"),
         ]
 
@@ -428,6 +433,7 @@ class InteractivePruneUI:
             ("Notes", self.form_data.delete_orphaned_notes),
             ("Skills", self.form_data.delete_orphaned_skills),
             ("Folders", self.form_data.delete_orphaned_folders),
+            ("Automations", self.form_data.delete_orphaned_automations),
             ("Chat Messages", self.form_data.delete_orphaned_chat_messages),
         ]
         for name, enabled in orphaned_items:
@@ -451,7 +457,7 @@ class InteractivePruneUI:
         console.print()
         Prompt.ask("Press Enter to continue")
 
-    def run_preview(self):
+    async def run_preview(self):
         """Run preview and show results."""
         console.clear()
         console.print(Panel.fit(
@@ -472,26 +478,26 @@ class InteractivePruneUI:
                 # Use lightweight SQL instead of Knowledges.get_knowledge_bases()
                 # which eager-loads File ORM objects through relationships, pulling
                 # hundreds of MB of JSONB into memory on large databases.
-                kb_map = get_kb_user_map()
-                all_users = Users.get_users()["users"]
+                kb_map = await get_kb_user_map()
+                all_users = (await Users.get_users())["users"]
                 self._active_user_ids = {str(user.id) for user in all_users}
                 self._active_kb_ids = {
                     kb_id
                     for kb_id, uid in kb_map.items()
                     if uid in self._active_user_ids
                 }
-                self._active_file_ids = get_active_file_ids(active_user_ids=self._active_user_ids)
+                self._active_file_ids = await get_active_file_ids(active_user_ids=self._active_user_ids)
 
-                orphaned_counts = count_orphaned_records(self.form_data, self._active_file_ids, self._active_user_ids)
+                orphaned_counts = await count_orphaned_records(self.form_data, self._active_file_ids, self._active_user_ids)
 
                 result = PrunePreviewResult(
-                    inactive_users=count_inactive_users(
+                    inactive_users=await count_inactive_users(
                         self.form_data.delete_inactive_users_days,
                         self.form_data.exempt_admin_users,
                         self.form_data.exempt_pending_users,
                         all_users,
                     ),
-                    old_chats=count_old_chats(
+                    old_chats=await count_old_chats(
                         self.form_data.days,
                         self.form_data.exempt_archived_chats,
                         self.form_data.exempt_chats_in_folders,
@@ -506,7 +512,7 @@ class InteractivePruneUI:
                     orphaned_notes=orphaned_counts["notes"],
                     orphaned_skills=orphaned_counts["skills"],
                     orphaned_folders=orphaned_counts["folders"],
-                    orphaned_uploads=count_orphaned_uploads(self._active_file_ids),
+                    orphaned_uploads=await count_orphaned_uploads(self._active_file_ids),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
                         self._active_file_ids, self._active_kb_ids, self._active_user_ids
                     ),
@@ -514,6 +520,8 @@ class InteractivePruneUI:
                         self.form_data.audio_cache_max_age_days
                     ),
                     orphaned_chat_messages=orphaned_counts["chat_messages"],
+                    orphaned_automations=orphaned_counts["automations"],
+                    orphaned_automation_runs=orphaned_counts["automation_runs"],
                 )
 
                 progress.update(task, completed=True)
@@ -529,7 +537,7 @@ class InteractivePruneUI:
 
         # Offer CSV export if there are items
         if result.has_items():
-            self._offer_export(result)
+            await self._offer_export(result)
 
         console.print()
         Prompt.ask("Press Enter to continue")
@@ -560,7 +568,7 @@ class InteractivePruneUI:
         console.print(f"[bold red]TOTAL ITEMS: {result.total_items():,}[/bold red]")
         console.print("=" * 70)
 
-    def _offer_export(self, result: PrunePreviewResult):
+    async def _offer_export(self, result: PrunePreviewResult):
         """Offer to export detailed preview to CSV with double confirmation."""
         from prune_export import PreviewExporter, format_size
 
@@ -612,7 +620,7 @@ class InteractivePruneUI:
                 console=console,
             ) as progress:
                 task = progress.add_task("Exporting...", total=result.total_items())
-                rows = exporter.export(
+                rows = await exporter.export(
                     output_path,
                     result,
                     progress_callback=lambda n: progress.advance(task, n),
@@ -655,7 +663,7 @@ class InteractivePruneUI:
 
         return True
 
-    def run_execution(self):
+    async def run_execution(self):
         """Execute the actual pruning operation."""
         console.print("\n[bold red]Starting pruning operation...[/bold red]")
 
@@ -666,20 +674,20 @@ class InteractivePruneUI:
             return
 
         try:
-            self.execute_prune_stages()
+            await self.execute_prune_stages()
         finally:
             PruneLock.release()
 
         console.print("\n[bold green]✓ Pruning operation completed successfully![/bold green]")
         Prompt.ask("\nPress Enter to continue")
 
-    def execute_prune_stages(self):
+    async def execute_prune_stages(self):
         """Execute all prune stages with progress display."""
         with Progress(console=console) as progress:
             # Stage 0: Inactive users
             if self.form_data.delete_inactive_users_days is not None:
                 task = progress.add_task("Deleting inactive users...", total=None)
-                deleted = delete_inactive_users(
+                deleted = await delete_inactive_users(
                     self.form_data.delete_inactive_users_days,
                     self.vector_cleaner,
                     self.form_data.exempt_admin_users,
@@ -694,7 +702,7 @@ class InteractivePruneUI:
                 cutoff_time = int(time.time()) - (self.form_data.days * 86400)
                 deleted = 0
 
-                with get_db() as db:
+                async with get_async_db() as db:
                     conditions = Chat.updated_at < cutoff_time
                     if self.form_data.exempt_archived_chats:
                         conditions &= or_(Chat.archived == False, Chat.archived == None)
@@ -704,8 +712,8 @@ class InteractivePruneUI:
                         if hasattr(Chat, 'pinned'):
                             conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
-                    for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
-                        Chats.delete_chat_by_id(chat_id, db=db)
+                    async for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                        await Chats.delete_chat_by_id(chat_id, db=db)
                         deleted += 1
 
                 progress.update(task, completed=True)
@@ -713,19 +721,19 @@ class InteractivePruneUI:
 
             # Stage 2-3: Orphaned data
             task = progress.add_task("Building preservation set...", total=None)
-            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
-            kb_map = get_kb_user_map()
+            active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
+            kb_map = await get_kb_user_map()
             active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
-            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
             # Delete orphaned files — stream id+user_id only, iterate directly
             task = progress.add_task("Deleting orphaned files...", total=None)
             deleted_files = 0
-            with get_db() as db:
-                for fid, uid in stream_rows(db, File.id, File.user_id):
+            async with get_async_db() as db:
+                async for fid, uid in stream_rows(db, File.id, File.user_id):
                     if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
-                        if safe_delete_file_by_id(fid, self.vector_cleaner, db=db):
+                        if await safe_delete_file_by_id(fid, self.vector_cleaner, db=db):
                             deleted_files += 1
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_files} orphaned files")
@@ -735,11 +743,11 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_knowledge_bases:
                 task = progress.add_task("Deleting orphaned knowledge bases...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for kb in Knowledges.get_knowledge_bases(db=db):
+                async with get_async_db() as db:
+                    for kb in await Knowledges.get_knowledge_bases(db=db):
                         if str(kb.user_id) not in active_user_ids:
                             self.vector_cleaner.delete_collection(kb.id)
-                            Knowledges.delete_knowledge_by_id(kb.id, db=db)
+                            await Knowledges.delete_knowledge_by_id(kb.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned knowledge bases")
@@ -749,10 +757,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_chats:
                 task = progress.add_task("Deleting orphaned chats...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
+                async with get_async_db() as db:
+                    async for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
                         if str(chat_uid) not in active_user_ids:
-                            Chats.delete_chat_by_id(chat_id, db=db)
+                            await Chats.delete_chat_by_id(chat_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chats")
@@ -761,10 +769,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_tools:
                 task = progress.add_task("Deleting orphaned tools...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for tool in Tools.get_tools(db=db):
+                async with get_async_db() as db:
+                    for tool in await Tools.get_tools(db=db):
                         if str(tool.user_id) not in active_user_ids:
-                            Tools.delete_tool_by_id(tool.id, db=db)
+                            await Tools.delete_tool_by_id(tool.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned tools")
@@ -773,10 +781,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_functions:
                 task = progress.add_task("Deleting orphaned functions...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for function in Functions.get_functions(db=db):
+                async with get_async_db() as db:
+                    for function in await Functions.get_functions(db=db):
                         if str(function.user_id) not in active_user_ids:
-                            Functions.delete_function_by_id(function.id, db=db)
+                            await Functions.delete_function_by_id(function.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned functions")
@@ -785,10 +793,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_prompts:
                 task = progress.add_task("Deleting orphaned prompts...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for prompt in Prompts.get_prompts(db=db):
+                async with get_async_db() as db:
+                    for prompt in await Prompts.get_prompts(db=db):
                         if str(prompt.user_id) not in active_user_ids:
-                            Prompts.delete_prompt_by_command(prompt.command, db=db)
+                            await Prompts.delete_prompt_by_command(prompt.command, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned prompts")
@@ -797,10 +805,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_models:
                 task = progress.add_task("Deleting orphaned models...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for model in Models.get_all_models(db=db):
+                async with get_async_db() as db:
+                    for model in await Models.get_all_models(db=db):
                         if str(model.user_id) not in active_user_ids:
-                            Models.delete_model_by_id(model.id, db=db)
+                            await Models.delete_model_by_id(model.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned models")
@@ -809,10 +817,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_notes:
                 task = progress.add_task("Deleting orphaned notes...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for note in Notes.get_notes(db=db):
+                async with get_async_db() as db:
+                    for note in await Notes.get_notes(db=db):
                         if str(note.user_id) not in active_user_ids:
-                            Notes.delete_note_by_id(note.id, db=db)
+                            await Notes.delete_note_by_id(note.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned notes")
@@ -821,10 +829,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_skills:
                 task = progress.add_task("Deleting orphaned skills...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for skill in Skills.get_skills(db=db):
+                async with get_async_db() as db:
+                    for skill in await Skills.get_skills(db=db):
                         if str(skill.user_id) not in active_user_ids:
-                            Skills.delete_skill_by_id(skill.id, db=db)
+                            await Skills.delete_skill_by_id(skill.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned skills")
@@ -833,10 +841,10 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_folders:
                 task = progress.add_task("Deleting orphaned folders...", total=None)
                 deleted = 0
-                with get_db() as db:
-                    for folder in self._get_all_folders_safe(db=db):
+                async with get_async_db() as db:
+                    for folder in await self._get_all_folders_safe(db=db):
                         if str(folder.user_id) not in active_user_ids:
-                            Folders.delete_folder_by_id_and_user_id(folder.id, folder.user_id, db=db)
+                            await Folders.delete_folder_by_id_and_user_id(folder.id, folder.user_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned folders")
@@ -844,9 +852,17 @@ class InteractivePruneUI:
             # Orphaned chat messages
             if self.form_data.delete_orphaned_chat_messages:
                 task = progress.add_task("Deleting orphaned chat messages...", total=None)
-                deleted = delete_orphaned_chat_messages()
+                deleted = await delete_orphaned_chat_messages()
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chat messages")
+
+            # Orphaned automations and automation runs
+            if self.form_data.delete_orphaned_automations:
+                task = progress.add_task("Deleting orphaned automations...", total=None)
+                deleted_automations = await delete_orphaned_automations(active_user_ids)
+                deleted_runs = await delete_orphaned_automation_runs()
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted_automations} orphaned automations, {deleted_runs} orphaned automation runs")
 
             # Stage 4: Cleanup physical files and vector collections.
             # Recompute preservation sets after Stage 3 deletions — files that
@@ -854,14 +870,14 @@ class InteractivePruneUI:
             # be considered active.  This is safe with the streaming-based
             # get_active_file_ids() that replaced the OOM-prone ORM version.
             task = progress.add_task("Recomputing preservation sets...", total=None)
-            active_user_ids = {str(user.id) for user in Users.get_users()["users"]}
-            kb_map = get_kb_user_map()
+            active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
+            kb_map = await get_kb_user_map()
             active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
-            active_file_ids = get_active_file_ids(active_user_ids=active_user_ids)
+            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
-            deleted_uploads = cleanup_orphaned_uploads(active_file_ids)
+            deleted_uploads = await cleanup_orphaned_uploads(active_file_ids)
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_uploads} orphaned upload files")
 
@@ -880,53 +896,44 @@ class InteractivePruneUI:
                 console.print(f"[green]✓[/green] Deleted {deleted_audio} audio cache files")
 
             # VACUUM
+            #
+            # VACUUM is a DDL/maintenance command that CANNOT run inside a
+            # transaction.  The async engine always opens a transaction, so
+            # we use the sync engine directly with a raw DBAPI connection in
+            # autocommit mode.
             if self.form_data.run_vacuum:
                 task = progress.add_task("Running VACUUM (this may take a while)...", total=None)
                 try:
-                    with get_db() as db:
-                        engine = db.get_bind()
-                        db_url = str(engine.url)
-
-                        if 'postgresql' in db_url:
-                            # PostgreSQL: VACUUM requires autocommit mode (no transaction)
-                            raw_connection = engine.raw_connection()
-                            try:
-                                raw_connection.set_isolation_level(0)  # AUTOCOMMIT mode
-                                cursor = raw_connection.cursor()
-                                cursor.execute("VACUUM ANALYZE")
-                                cursor.close()
-                                raw_connection.commit()
-                                console.print("[green]✓[/green] Vacuumed PostgreSQL main database")
-                            finally:
-                                raw_connection.close()
+                    # Resolve the sync engine lazily — only needed for VACUUM,
+                    # so non-VACUUM operations remain usable if the symbol
+                    # is unavailable in a given Open WebUI build.
+                    engine = get_sync_engine()
+                    with engine.connect().execution_options(
+                        isolation_level="AUTOCOMMIT"
+                    ) as conn:
+                        if 'postgresql' in str(engine.url):
+                            conn.execute(text("VACUUM ANALYZE"))
+                            console.print("[green]✓[/green] Vacuumed PostgreSQL main database")
                         else:
-                            # SQLite: Can run in transaction
-                            db.execute(text("VACUUM"))
-                            console.print("[green]✓[/green] Vacuumed main database")
+                            conn.execute(text("VACUUM"))
+                            console.print("[green]✓[/green] Vacuumed SQLite main database")
 
                     if isinstance(self.vector_cleaner, ChromaDatabaseCleaner):
-                        # Log size before VACUUM
                         size_before_mb = self.vector_cleaner.chroma_db_path.stat().st_size / (1024 * 1024)
 
                         with sqlite3.connect(str(self.vector_cleaner.chroma_db_path)) as conn:
                             conn.execute("VACUUM")
 
-                        # Log size after VACUUM
                         size_after_mb = self.vector_cleaner.chroma_db_path.stat().st_size / (1024 * 1024)
                         freed_mb = size_before_mb - size_after_mb
                         console.print(f"[green]✓[/green] Vacuumed ChromaDB ({size_before_mb:.1f}MB → {size_after_mb:.1f}MB, freed {freed_mb:.1f}MB)")
                     elif isinstance(self.vector_cleaner, PGVectorDatabaseCleaner) and self.vector_cleaner.session:
-                        engine = self.vector_cleaner.session.get_bind()
-                        raw_connection = engine.raw_connection()
-                        try:
-                            raw_connection.set_isolation_level(0)  # AUTOCOMMIT mode
-                            cursor = raw_connection.cursor()
-                            cursor.execute("VACUUM ANALYZE")
-                            cursor.close()
-                            raw_connection.commit()
+                        pg_engine = self.vector_cleaner.session.get_bind()
+                        with pg_engine.connect().execution_options(
+                            isolation_level="AUTOCOMMIT"
+                        ) as pg_conn:
+                            pg_conn.execute(text("VACUUM ANALYZE"))
                             console.print("[green]✓[/green] Vacuumed PostgreSQL vector database")
-                        finally:
-                            raw_connection.close()
                 except Exception as e:
                     console.print(f"[yellow]⚠ VACUUM failed: {e}[/yellow]")
 
@@ -982,7 +989,7 @@ This interactive tool helps you clean up your Open WebUI database by:
 
 
 def main():
-    """Main entry point."""
+    """Main entry point — bridges sync CLI to async runtime."""
     # Set up logging
     logging.basicConfig(
         level=logging.INFO,
@@ -992,7 +999,7 @@ def main():
 
     try:
         ui = InteractivePruneUI()
-        return ui.run()
+        return asyncio.run(ui.run())
     except KeyboardInterrupt:
         console.print("\n\n[yellow]Interrupted by user[/yellow]")
         return 130

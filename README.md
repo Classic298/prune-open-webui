@@ -26,7 +26,7 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 The Prune Tool provides a safe and powerful way to clean up your Open WebUI instance by:
 - Deleting old chats and conversations
 - Removing inactive user accounts
-- Cleaning orphaned data (files, tools, skills, prompts, etc.)
+- Cleaning orphaned data (files, tools, skills, automations, prompts, etc.)
 - Removing old audio cache files
 - Optimizing database performance
 
@@ -53,12 +53,24 @@ It runs independently of the web server and can be scheduled for automated maint
   - Milvus — full cleanup support
   - Qdrant — full cleanup support
 
+✅ **Storage Backend Support**
+- Local filesystem (`data/uploads`)
+- Amazon S3 (and S3-compatible endpoints) — honors `S3_KEY_PREFIX`
+- Google Cloud Storage
+- Azure Blob Storage
+
+Orphaned storage objects (files with no matching `File` row in the database) are detected and removed from whichever backend Open WebUI is configured to use.
+
 ✅ **Safety Features**
 - File-based locking prevents concurrent operations
 - Explicit `--execute` flag required — nothing is deleted without it
 - Multiple confirmation prompts (interactive mode)
 - Admin user protection
 - Detailed logging of all operations
+
+### Known Limitations
+
+- **Channels are not pruned.** The tool does not delete or clean up channels or channel messages. There has been no demand for this feature so far. If you need it, feel free to open a discussion.
 
 ### Compatibility
 
@@ -407,6 +419,7 @@ python prune/prune.py \
 | `--delete-orphaned-notes` | flag | True | `--no-delete-orphaned-notes` | Clean orphaned notes |
 | `--delete-orphaned-folders` | flag | True | `--no-delete-orphaned-folders` | Clean orphaned folders |
 | `--delete-orphaned-chat-messages` | flag | True | `--no-delete-orphaned-chat-messages` | Clean orphaned chat_message rows |
+| `--delete-orphaned-automations` | flag | True | `--no-delete-orphaned-automations` | Clean orphaned automations and automation runs |
 | `--audio-cache-max-age-days N` | int | 30 | — | Clean audio files older than N days |
 | `--run-vacuum` | flag | False | — | Run database optimization (locks DB!) |
 | `--dry-run` | flag | True | — | Preview only (default) |
@@ -428,6 +441,7 @@ python prune/prune.py \
   --no-delete-orphaned-notes \
   --no-delete-orphaned-folders \
   --no-delete-orphaned-chat-messages \
+  --no-delete-orphaned-automations \
   --execute
 
 # Delete archived chats too (overrides default exemption)
@@ -551,6 +565,7 @@ When you delete a user, **ALL their data is deleted**:
 - Files and uploads
 - Custom tools, functions, and skills
 - Knowledge bases and embeddings
+- Automations and automation run history
 - Prompts, models, notes, folders
 - Everything they created
 
@@ -655,11 +670,12 @@ If operations are very slow:
 - Audio cache files (based on file `mtime`)
 
 **Orphaned Data:**
-- Chats/tools/skills/prompts/etc. from deleted users
+- Chats/tools/skills/automations/prompts/etc. from deleted users
+- Automation runs from deleted automations
 - Chat messages (analytics metadata) from deleted chats — see note below
-- Files not referenced in chats/KBs
+- Files not referenced in chats/KBs (storage objects are deleted from the configured backend — local, S3, GCS, or Azure)
 - Vector collections for deleted files/KBs
-- Physical upload files without DB records
+- Storage objects (local uploads, S3/GCS/Azure blobs) whose path does not match any `File` row in the database
 
 > [!NOTE]
 > SQLite does not enforce `ON DELETE CASCADE` by default. This means deleting a chat may leave behind orphaned rows in the `chat_message` table (used by the Analytics feature). The prune tool detects and removes these automatically. PostgreSQL users are not affected.
@@ -679,6 +695,25 @@ If operations are very slow:
 - **Qdrant**: Full cleanup — standard and multitenancy modes
 - **Others**: Safe no-op (does nothing)
 - **Adding support for a new backend**: Subclass `VectorDatabaseCleaner` in `prune_core.py`, implement the abstract methods, and register it in the `get_vector_database_cleaner` factory. Community contributions are welcome!
+
+### Storage Backend Support
+
+The prune tool uses Open WebUI's existing `Storage` abstraction and its already-configured clients — no extra credentials or configuration are required beyond what Open WebUI itself needs. Whichever backend `STORAGE_PROVIDER` is set to, the prune tool will:
+
+1. List every object in that backend
+2. Compare each object's path against the set of active `File.path` values in the database
+3. Delete objects whose path does not match any active `File` row
+
+| `STORAGE_PROVIDER` | Scan target | Notes |
+|---|---|---|
+| `local` (default) | `data/uploads/` | Walks the directory with `Path.iterdir()` |
+| `s3` | S3 bucket | Honors `S3_KEY_PREFIX` — objects outside the prefix are never touched |
+| `gcs` | GCS bucket | Scans the entire bucket |
+| `azure` | Azure container | Scans the entire container |
+| unknown | — | Orphan storage scan is skipped with a warning |
+
+> [!WARNING]
+> For GCS and Azure, Open WebUI does not expose a key-prefix option. The prune tool scans the **entire** configured bucket/container and will flag any object with no matching `File` row as orphaned. If you share the bucket with other applications, either give Open WebUI a dedicated bucket or run with `--dry-run` / `--export-preview` first to review what would be deleted.
 
 ### Safety Features
 

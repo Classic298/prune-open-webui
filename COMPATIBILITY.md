@@ -7,5 +7,6 @@ This document tracks which minimum version of the Prune Tool is required for eac
 
 | Open WebUI Version | Minimum Prune Version Number | Notes |
 |---|---|---|
+| v0.9.0+ | v1.2.0 | Adds automation and automation_run table cleanup and full async rewrite — required by Open WebUI 0.9.0's async data layer — [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.2.0)  |
 | v0.8.0+ | v1.0.1 | [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.0.1) |
 | v0.7.X  | v1.0.0 | Initial release |

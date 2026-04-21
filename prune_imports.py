@@ -116,9 +116,28 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.tools import Tool, Tools
     from open_webui.models.skills import Skill, Skills
     from open_webui.models.folders import Folder, Folders, FolderModel
-    from open_webui.internal.db import get_db, get_db_context
-    from open_webui.config import CACHE_DIR
+    from open_webui.internal.db import get_async_db, get_async_db_context
+    from open_webui.config import CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER
     from open_webui.storage.provider import Storage
+
+    try:
+        from open_webui.config import S3_KEY_PREFIX
+    except ImportError:
+        S3_KEY_PREFIX = ''
+
+    # Core ORM models — needed for cleanup queries
+    try:
+        from open_webui.models.automations import Automation, AutomationRun
+    except ImportError:
+        Automation = None
+        AutomationRun = None
+
+    # Optional manager classes — not required for prune operations
+    try:
+        from open_webui.models.automations import Automations, AutomationRuns
+    except ImportError:
+        Automations = None
+        AutomationRuns = None
 
     try:
         from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
@@ -146,9 +165,28 @@ elif _import_strategy == "git":
     from backend.open_webui.models.tools import Tool, Tools
     from backend.open_webui.models.skills import Skill, Skills
     from backend.open_webui.models.folders import Folder, Folders, FolderModel
-    from backend.open_webui.internal.db import get_db, get_db_context
-    from backend.open_webui.config import CACHE_DIR
+    from backend.open_webui.internal.db import get_async_db, get_async_db_context
+    from backend.open_webui.config import CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER
     from backend.open_webui.storage.provider import Storage
+
+    try:
+        from backend.open_webui.config import S3_KEY_PREFIX
+    except ImportError:
+        S3_KEY_PREFIX = ''
+
+    # Core ORM models — needed for cleanup queries
+    try:
+        from backend.open_webui.models.automations import Automation, AutomationRun
+    except ImportError:
+        Automation = None
+        AutomationRun = None
+
+    # Optional manager classes — not required for prune operations
+    try:
+        from backend.open_webui.models.automations import Automations, AutomationRuns
+    except ImportError:
+        Automations = None
+        AutomationRuns = None
 
     try:
         from backend.open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
@@ -160,6 +198,21 @@ elif _import_strategy == "git":
         ENABLE_QDRANT_MULTITENANCY_MODE,
         ENABLE_MILVUS_MULTITENANCY_MODE,
     )
+
+
+def get_sync_engine():
+    """Lazy resolver for the sync engine.
+
+    The sync engine is only needed for VACUUM (a DDL command that cannot
+    run inside an async transaction).  Importing it lazily means that
+    non-VACUUM operations (dry-run, preview, export) remain usable even
+    if the target Open WebUI build does not expose 'engine'.
+    """
+    if _import_strategy == "git":
+        from backend.open_webui.internal.db import engine
+    else:
+        from open_webui.internal.db import engine
+    return engine
 
 
 # Export all for easy importing
@@ -186,13 +239,21 @@ __all__ = [
     'Tools',
     'Skill',
     'Skills',
+    'Automation',
+    'AutomationRun',
+    'Automations',
+    'AutomationRuns',
     'Folder',
     'Folders',
     'FolderModel',
     'Storage',
-    'get_db',
-    'get_db_context',
+    'get_async_db',
+    'get_async_db_context',
+    'get_sync_engine',
     'CACHE_DIR',
+    'UPLOAD_DIR',
+    'STORAGE_PROVIDER',
+    'S3_KEY_PREFIX',
     'VECTOR_DB_CLIENT',
     'VECTOR_DB',
     'ENABLE_QDRANT_MULTITENANCY_MODE',
