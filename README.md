@@ -134,7 +134,33 @@ VECTOR_DB=pgvector
 
 > **PostgreSQL passwords with special characters** must be URL-encoded: `@` becomes `%40`, `:` becomes `%3A`, `/` becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`. So `password@123` becomes `password%40123`.
 
-> Inside a properly configured Docker container these are already set and inherited automatically.
+### Providing the variables
+
+The prune tool reads variables from the current environment and, if present, from a `.env` file in the working directory. Use whichever method matches your setup:
+
+- **Docker:** set them in your `docker-compose.yml` `environment:` block (or with `-e` flags on `docker run`). A correctly configured Open WebUI container already has them, and `docker exec` inherits them automatically, so no extra setup is needed.
+- **Inline (quick, one-off):**
+  ```bash
+  DATABASE_URL="postgresql://user:password@localhost:5432/openwebui" VECTOR_DB="pgvector" \
+    python prune/prune.py --dry-run
+  ```
+- **`.env` file (best for repeated, native, or systemd use):** create a `.env` in the Open WebUI directory and it is loaded automatically.
+  ```bash
+  cat > /opt/openwebui/.env <<'EOF'
+  DATABASE_URL=postgresql://user:password@localhost:5432/openwebui
+  VECTOR_DB=pgvector
+  DATA_DIR=/var/lib/openwebui
+  CACHE_DIR=/var/lib/openwebui/cache
+  EOF
+  ```
+- **Systemd service:** a unit's variables are not exported to your shell, so source them before running the tool:
+  ```bash
+  set -a
+  source <(systemctl show openwebui.service -p Environment | sed 's/^Environment=//; s/ /\n/g')
+  set +a
+  ```
+
+> **These errors mean the variables are not set:** "Required environment variable not found", "unable to open database file", or "Failed to connect to database". Provide them with one of the methods above.
 
 ---
 
@@ -201,112 +227,17 @@ docker exec <container-name> python /app/prune/prune.py --days 90 --dry-run
 - All vector database dependencies (chromadb, etc.) are pre-installed in the container
 - Data persists in your Docker volumes
 
-**Required Environment Variables:**
-
-⚠️ **IMPORTANT:** The prune script requires a **properly configured** Open WebUI container to function. If you get "*Required environment variable not found*" error, your Open WebUI container is not configured correctly.
-
-See [Environment Variables](#environment-variables) for the full list. Inside a properly configured container they are already set and inherited automatically.
-
-**How to properly configure your Open WebUI container:**
-
-Using docker-compose.yml (recommended):
-```yaml
-services:
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    volumes:
-      - open-webui:/app/backend/data
-      - ./prune:/app/prune
-    environment:
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
-      - DATABASE_URL=sqlite:////app/backend/data/webui.db
-      - DATA_DIR=/app/backend/data
-    ports:
-      - "3000:8080"
-```
-
-Or using docker run:
-```bash
-docker run -d \
-  -e WEBUI_SECRET_KEY="your-secret-key" \
-  -e DATABASE_URL="sqlite:////app/backend/data/webui.db" \
-  -e DATA_DIR="/app/backend/data" \
-  -v open-webui:/app/backend/data \
-  -v ./prune:/app/prune \
-  -p 3000:8080 \
-  --name open-webui \
-  ghcr.io/open-webui/open-webui:main
-```
+> A correctly configured Open WebUI container already has the required variables and `docker exec` inherits them, so no extra setup is needed. See [Environment Variables](#environment-variables).
 
 ---
 
 ## Method 2: Systemd Service Installation
 
-If Open WebUI runs as a systemd service, environment variables like `DATABASE_URL` are **only available to the service**, not to your terminal session.
+If Open WebUI runs as a systemd service, its environment variables (like `DATABASE_URL`) are **only available to the service**, not to your terminal session.
 
-**⚠️ IMPORTANT:** The prune script needs the same environment variables as Open WebUI. If you get "unable to open database file" or "Failed to connect to database" errors, your environment variables are not set in your shell.
+Install the prune tool itself as shown in [Method 3: Pip](#method-3-pip-installation) or [Method 4: Git](#method-4-git-installation-manual-install). Because the service's variables are not in your shell, you must provide them before running the tool, for example with a `.env` file or by sourcing them from the unit.
 
-**Solution 1: Export environment variables inline** (Quick fix)
-```bash
-DATABASE_URL="postgresql://user:password@localhost:5432/openwebui" \
-VECTOR_DB="pgvector" \
-python /path/to/prune/prune.py --days 60 --dry-run
-```
-
-**Solution 2: Create a .env file** (Recommended for repeated use)
-```bash
-# Create .env file in Open WebUI directory
-cat > /opt/openwebui/.env <<'EOF'
-DATABASE_URL=postgresql://user:password@localhost:5432/openwebui
-VECTOR_DB=pgvector
-DATA_DIR=/var/lib/openwebui
-CACHE_DIR=/var/lib/openwebui/cache
-EOF
-
-# The script will automatically load this .env file
-cd /opt/openwebui
-python prune/prune.py --days 60 --dry-run
-```
-
-**Solution 3: Source systemd environment** (Advanced)
-```bash
-# Extract and export all environment variables from systemd service
-set -a
-source <(systemctl show openwebui.service -p Environment | \
-  sed 's/^Environment=//; s/ /\n/g')
-set +a
-
-# Now run the prune script
-python /path/to/prune/prune.py --days 60 --dry-run
-```
-
-**Solution 4: Create a wrapper script** (Best for automation)
-```bash
-# Create /usr/local/bin/openwebui-prune
-cat > /usr/local/bin/openwebui-prune <<'EOF'
-#!/bin/bash
-# Open WebUI Prune Wrapper Script
-
-# Set working directory
-cd /opt/openwebui
-
-# Source environment variables from .env file
-if [ -f /opt/openwebui/.env ]; then
-    export $(cat /opt/openwebui/.env | grep -v '^#' | xargs)
-fi
-
-# Run prune script with all arguments
-python prune/prune.py "$@"
-EOF
-
-# Make executable
-chmod +x /usr/local/bin/openwebui-prune
-
-# Now you can run from anywhere
-openwebui-prune --days 60 --dry-run
-```
-
-For the full list of variables and PostgreSQL connection-string details (including how to URL-encode passwords), see [Environment Variables](#environment-variables).
+See [Providing the variables](#providing-the-variables) for the inline, `.env` file, and systemd-sourcing approaches, and [Environment Variables](#environment-variables) for the full list.
 
 ---
 
@@ -329,10 +260,7 @@ pip show open-webui | grep Location
 # Run from that location
 cd <location>
 
-# Set required environment variables (see the Environment Variables section above)
-export DATABASE_URL="postgresql://user:password@localhost:5432/openwebui"
-export VECTOR_DB="pgvector"  # or chroma
-
+# Set the required environment variables first (see Environment Variables above)
 python prune/prune.py
 ```
 
