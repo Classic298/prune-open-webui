@@ -13,6 +13,7 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 1. [Overview](#overview)
 2. [Features](#features)
 3. [Installation](#installation)
+   - [Environment Variables](#environment-variables)
    - [Method 1: Docker (Recommended)](#method-1-docker-installation-recommended)
    - [Method 2: Systemd Service](#method-2-systemd-service-installation)
    - [Method 3: Pip](#method-3-pip-installation)
@@ -108,6 +109,33 @@ open-webui/              # Your Open WebUI root
 └── ...
 ```
 
+### Environment Variables
+
+The prune tool reads the **same environment variables as Open WebUI** so it can locate the database, data directory, and vector store. The variables are identical across every install method; only *how* you supply them differs (see each method below).
+
+| Variable | Required | Description |
+|---|---|---|
+| `WEBUI_SECRET_KEY` | Yes | Secret key for Open WebUI |
+| `DATABASE_URL` | Yes | Database connection string (SQLite or PostgreSQL) |
+| `DATA_DIR` | No | Data directory path (default: `/app/backend/data`) |
+| `CACHE_DIR` | No | Cache directory path (audio cache and the lock file) |
+| `VECTOR_DB` | No | Vector database type if using RAG (e.g. `chroma`, `pgvector`) |
+
+**SQLite (default):**
+```bash
+DATABASE_URL=sqlite:////app/backend/data/webui.db
+```
+
+**PostgreSQL:**
+```bash
+DATABASE_URL=postgresql://username:password@host:port/database
+VECTOR_DB=pgvector
+```
+
+> **PostgreSQL passwords with special characters** must be URL-encoded: `@` becomes `%40`, `:` becomes `%3A`, `/` becomes `%2F`, `?` becomes `%3F`, `#` becomes `%23`. So `password@123` becomes `password%40123`.
+
+> Inside a properly configured Docker container these are already set and inherited automatically.
+
 ---
 
 ## Method 1: Docker Installation (Recommended)
@@ -139,7 +167,7 @@ Then recreate the container so the mount takes effect:
 docker compose up -d
 ```
 
-> **Alternative (one-off copy):** If you cannot edit your compose file, copy the folder in instead — but you will have to re-copy after every update.
+> **Alternative (one-off copy):** If you cannot edit your compose file, copy the folder in instead, but you will have to re-copy after every update.
 > ```bash
 > # Find your Open WebUI container name
 > docker ps | grep open-webui
@@ -177,11 +205,7 @@ docker exec <container-name> python /app/prune/prune.py --days 90 --dry-run
 
 ⚠️ **IMPORTANT:** The prune script requires a **properly configured** Open WebUI container to function. If you get "*Required environment variable not found*" error, your Open WebUI container is not configured correctly.
 
-**Required variables:**
-- `WEBUI_SECRET_KEY` - Secret key for Open WebUI (required)
-- `DATABASE_URL` - Database connection string (required)
-- `DATA_DIR` - Data directory path (optional, default: `/app/backend/data`)
-- `VECTOR_DB` - Vector database type if using RAG (optional)
+See [Environment Variables](#environment-variables) for the full list. Inside a properly configured container they are already set and inherited automatically.
 
 **How to properly configure your Open WebUI container:**
 
@@ -282,22 +306,7 @@ chmod +x /usr/local/bin/openwebui-prune
 openwebui-prune --days 60 --dry-run
 ```
 
-**Required Environment Variables for PostgreSQL:**
-```bash
-DATABASE_URL=postgresql://username:password@host:port/database
-VECTOR_DB=pgvector                    # If using pgvector for RAG
-DATA_DIR=/var/lib/openwebui           # Data directory path
-CACHE_DIR=/var/lib/openwebui/cache    # Cache directory path
-```
-
-**Note:** If your password contains special characters, URL-encode them:
-- `@` → `%40`
-- `:` → `%3A`
-- `/` → `%2F`
-- `?` → `%3F`
-- `#` → `%23`
-
-Example: `password@123` becomes `password%40123`
+For the full list of variables and PostgreSQL connection-string details (including how to URL-encode passwords), see [Environment Variables](#environment-variables).
 
 ---
 
@@ -320,7 +329,7 @@ pip show open-webui | grep Location
 # Run from that location
 cd <location>
 
-# Set required environment variables (see Method 2 for .env file alternative)
+# Set required environment variables (see the Environment Variables section above)
 export DATABASE_URL="postgresql://user:password@localhost:5432/openwebui"
 export VECTOR_DB="pgvector"  # or chroma
 
