@@ -13,6 +13,10 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 1. [Overview](#overview)
 2. [Features](#features)
 3. [Installation](#installation)
+   - [Method 1: Docker (Recommended)](#method-1-docker-installation-recommended)
+   - [Method 2: Systemd Service](#method-2-systemd-service-installation)
+   - [Method 3: Pip](#method-3-pip-installation)
+   - [Method 4: Git (Manual)](#method-4-git-installation-manual-install)
 4. [Quick Start](#quick-start)
 5. [Usage](#usage)
 6. [Configuration Options](#configuration-options)
@@ -104,27 +108,9 @@ open-webui/              # Your Open WebUI root
 └── ...
 ```
 
-### Method 1: Git Installation (Manual Install)
+---
 
-**One-time setup:**
-```bash
-cd ~/path/to/open-webui        # Navigate to your Open WebUI directory
-git clone https://github.com/Classic298/prune-open-webui.git prune
-source venv/bin/activate        # Activate your Python virtual environment
-pip install -r prune/requirements.txt  # Install prune dependencies
-pip install rich                # For interactive mode (optional)
-```
-
-**⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
-
-**Ready to use:**
-```bash
-cd ~/path/to/open-webui        # Must run from repo root
-source venv/bin/activate
-python prune/prune.py          # Launch interactive mode
-```
-
-### Method 2: Docker Installation (Recommended)
+## Method 1: Docker Installation (Recommended)
 
 Running inside the Docker container is the **recommended approach** because all dependencies (including vector database libraries like chromadb) are already installed.
 
@@ -135,14 +121,32 @@ git clone https://github.com/Classic298/prune-open-webui.git prune
 
 **⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
 
-**Step 2: Copy files into your Docker container** (one-time setup)
-```bash
-# Find your Open WebUI container name
-docker ps | grep open-webui
+**Step 2: Make the prune tool available in the container** (one-time setup)
 
-# Copy the prune folder into the container
-docker cp prune <container-name>:/app/
+**A volume mount is the recommended approach.** Mounting the `prune/` folder into the container (rather than copying it in with `docker cp`) keeps the scripts in sync with your local copy, so you never have to re-copy after pulling updates. Add the mount to your `docker-compose.yml`:
+
+```yaml
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    volumes:
+      - open-webui:/app/backend/data
+      - ./prune:/app/prune          # Mount the prune tool
 ```
+
+Then recreate the container so the mount takes effect:
+```bash
+docker compose up -d
+```
+
+> **Alternative (one-off copy):** If you cannot edit your compose file, copy the folder in instead — but you will have to re-copy after every update.
+> ```bash
+> # Find your Open WebUI container name
+> docker ps | grep open-webui
+>
+> # Copy the prune folder into the container
+> docker cp prune <container-name>:/app/
+> ```
 
 **Step 3: Run the prune script**
 
@@ -210,7 +214,9 @@ docker run -d \
   ghcr.io/open-webui/open-webui:main
 ```
 
-### Method 3: Systemd Service Installation
+---
+
+## Method 2: Systemd Service Installation
 
 If Open WebUI runs as a systemd service, environment variables like `DATABASE_URL` are **only available to the service**, not to your terminal session.
 
@@ -293,7 +299,9 @@ CACHE_DIR=/var/lib/openwebui/cache    # Cache directory path
 
 Example: `password@123` becomes `password%40123`
 
-### Method 4: Pip Installation
+---
+
+## Method 3: Pip Installation
 
 **Important:** Ensure all Open WebUI dependencies are installed, including vector database libraries (chromadb, etc.). The prune script requires the same dependencies as the main Open WebUI application.
 
@@ -312,11 +320,33 @@ pip show open-webui | grep Location
 # Run from that location
 cd <location>
 
-# Set required environment variables (see Method 3 for .env file alternative)
+# Set required environment variables (see Method 2 for .env file alternative)
 export DATABASE_URL="postgresql://user:password@localhost:5432/openwebui"
 export VECTOR_DB="pgvector"  # or chroma
 
 python prune/prune.py
+```
+
+---
+
+## Method 4: Git Installation (Manual Install)
+
+**One-time setup:**
+```bash
+cd ~/path/to/open-webui        # Navigate to your Open WebUI directory
+git clone https://github.com/Classic298/prune-open-webui.git prune
+source venv/bin/activate        # Activate your Python virtual environment
+pip install -r prune/requirements.txt  # Install prune dependencies
+pip install rich                # For interactive mode (optional)
+```
+
+**⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
+
+**Ready to use:**
+```bash
+cd ~/path/to/open-webui        # Must run from repo root
+source venv/bin/activate
+python prune/prune.py          # Launch interactive mode
 ```
 
 ## Quick Start
@@ -619,7 +649,7 @@ Failed to connect to database
 
 **Root Cause:** Environment variables like `DATABASE_URL` are set in your systemd service file but are **NOT** exported to your shell session.
 
-**Solution:** See [Method 3: Systemd Service Installation](#method-3-systemd-service-installation) for detailed instructions on configuring environment variables for your setup.
+**Solution:** See [Method 2: Systemd Service Installation](#method-2-systemd-service-installation) for detailed instructions on configuring environment variables for your setup.
 
 ### Error: "Operation already in progress"
 
