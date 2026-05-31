@@ -139,11 +139,6 @@ VECTOR_DB=pgvector
 The prune tool reads variables from the current environment and, if present, from a `.env` file in the working directory. Use whichever method matches your setup:
 
 - **Docker:** set them in your `docker-compose.yml` `environment:` block (or with `-e` flags on `docker run`). A correctly configured Open WebUI container already has them, and `docker exec` inherits them automatically, so no extra setup is needed.
-- **Inline (quick, one-off):**
-  ```bash
-  DATABASE_URL="postgresql://user:password@localhost:5432/openwebui" VECTOR_DB="pgvector" \
-    python prune/prune.py --dry-run
-  ```
 - **`.env` file (best for repeated, native, or systemd use):** create a `.env` in the Open WebUI directory and it is loaded automatically.
   ```bash
   cat > /opt/openwebui/.env <<'EOF'
@@ -237,7 +232,7 @@ If Open WebUI runs as a systemd service, its environment variables (like `DATABA
 
 Install the prune tool itself as shown in [Method 3: Pip](#method-3-pip-installation) or [Method 4: Git](#method-4-git-installation-manual-install). Because the service's variables are not in your shell, you must provide them before running the tool, for example with a `.env` file or by sourcing them from the unit.
 
-See [Providing the variables](#providing-the-variables) for the inline, `.env` file, and systemd-sourcing approaches, and [Environment Variables](#environment-variables) for the full list.
+See [Providing the variables](#providing-the-variables) for the `.env` file and systemd-sourcing approaches, and [Environment Variables](#environment-variables) for the full list.
 
 ---
 
