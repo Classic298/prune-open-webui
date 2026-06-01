@@ -340,6 +340,7 @@ python prune/prune.py --days 60 --dry-run
 python prune/prune.py \
   --days 180 \
   --exempt-archived-chats \
+  --exempt-pinned-chats \
   --exempt-chats-in-folders \
   --execute
 ```
@@ -367,7 +368,8 @@ python prune/prune.py \
 |--------|------|---------|-------------|-------------|
 | `--days N` | int | None | — | Delete chats older than N days |
 | `--exempt-archived-chats` | flag | False | — | Keep archived chats |
-| `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders/pinned |
+| `--exempt-pinned-chats` | flag | False | — | Keep pinned chats |
+| `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders |
 | `--delete-inactive-users-days N` | int | None | — | Delete users inactive N+ days |
 | `--exempt-admin-users` | flag | True | `--no-exempt-admin-users` | Never delete admins (RECOMMENDED) |
 | `--exempt-pending-users` | flag | True | `--no-exempt-pending-users` | Never delete pending users |
@@ -647,7 +649,7 @@ If operations are very slow:
 - Referenced files
 - Valid vector collections
 - Recent data (within retention period)
-- Exempted categories (archived, folders, admins)
+- Exempted categories (archived, pinned, folders, admins)
 
 ### Vector Database Support
 

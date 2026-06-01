@@ -20,6 +20,7 @@ class PruneDataForm(BaseModel):
     """
     days: Optional[int] = None
     exempt_archived_chats: bool = False
+    exempt_pinned_chats: bool = False
     exempt_chats_in_folders: bool = False
     delete_orphaned_chats: bool = True
     delete_orphaned_tools: bool = False

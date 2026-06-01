@@ -119,7 +119,7 @@ Safety Features:
   - Uses file-based locking to prevent concurrent runs
   - Dry-run mode enabled by default (use --execute to actually delete)
   - Detailed logging of all operations
-  - Preserves archived chats and folder-organized chats by default
+  - Supports exemptions for archived, pinned, and folder-organized chats
   - Admin users exempted from deletion by default
         """
     )
@@ -159,10 +159,16 @@ Safety Features:
         help='Include archived chats in age-based deletion'
     )
     parser.add_argument(
+        '--exempt-pinned-chats',
+        action='store_true',
+        default=False,
+        help='Keep pinned chats even if old'
+    )
+    parser.add_argument(
         '--exempt-chats-in-folders',
         action='store_true',
         default=False,
-        help='Keep chats in folders/pinned even if old'
+        help='Keep chats in folders even if old'
     )
 
     # Inactive user deletion
@@ -389,6 +395,7 @@ def create_prune_form(args) -> PruneDataForm:
     return PruneDataForm(
         days=args.days,
         exempt_archived_chats=args.exempt_archived_chats,
+        exempt_pinned_chats=args.exempt_pinned_chats,
         exempt_chats_in_folders=args.exempt_chats_in_folders,
         delete_orphaned_chats=args.delete_orphaned_chats,
         delete_orphaned_tools=args.delete_orphaned_tools,
@@ -544,6 +551,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     form_data.days,
                     form_data.exempt_archived_chats,
                     form_data.exempt_chats_in_folders,
+                    form_data.exempt_pinned_chats,
                 ),
                 orphaned_chats=orphaned_counts["chats"],
                 orphaned_files=orphaned_counts["files"],
@@ -622,11 +630,11 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 conditions = Chat.updated_at < cutoff_time
                 if form_data.exempt_archived_chats:
                     conditions &= or_(Chat.archived == False, Chat.archived == None)
+                if form_data.exempt_pinned_chats and hasattr(Chat, 'pinned'):
+                    conditions &= or_(Chat.pinned == False, Chat.pinned == None)
                 if form_data.exempt_chats_in_folders:
                     if hasattr(Chat, 'folder_id'):
                         conditions &= Chat.folder_id == None
-                    if hasattr(Chat, 'pinned'):
-                        conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
                 deleted = 0
                 async for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
@@ -947,6 +955,7 @@ async def async_main():
     if form_data.days is not None:
         log.info(f"  Delete chats older than: {form_data.days} days")
         log.info(f"    Exempt archived chats: {form_data.exempt_archived_chats}")
+        log.info(f"    Exempt pinned chats: {form_data.exempt_pinned_chats}")
         log.info(f"    Exempt chats in folders: {form_data.exempt_chats_in_folders}")
 
     if form_data.delete_inactive_users_days is not None:

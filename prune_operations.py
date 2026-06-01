@@ -225,7 +225,10 @@ async def count_inactive_users(
 
 
 async def count_old_chats(
-    days: Optional[int], exempt_archived: bool, exempt_in_folders: bool
+    days: Optional[int],
+    exempt_archived: bool,
+    exempt_in_folders: bool,
+    exempt_pinned: bool,
 ) -> int:
     """Count chats that would be deleted by age.
 
@@ -245,12 +248,13 @@ async def count_old_chats(
             if exempt_archived:
                 conditions.append(or_(Chat.archived == False, Chat.archived == None))
 
+            if exempt_pinned and hasattr(Chat, 'pinned'):
+                conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
+
             if exempt_in_folders:
                 folder_conditions = []
                 if hasattr(Chat, 'folder_id'):
                     folder_conditions.append(Chat.folder_id == None)
-                if hasattr(Chat, 'pinned'):
-                    folder_conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
                 if folder_conditions:
                     conditions.append(and_(*folder_conditions))
 
