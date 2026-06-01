@@ -2,7 +2,7 @@
 
 All notable changes to the Open WebUI Prune Tool are documented here. Each entry lists the minimum Open WebUI version it is compatible with; see [COMPATIBILITY.md](COMPATIBILITY.md) for the full matrix, and the [Releases](https://github.com/Classic298/prune-open-webui/releases) page for downloads.
 
-## [v1.2.1.1] - 2026-06-01
+## [v1.2.1.1] - 2026-06-02
 
 Compatible with Open WebUI v0.9.6
 
