@@ -7,6 +7,7 @@ This document tracks which minimum version of the Prune Tool is required for eac
 
 | Open WebUI Version | Minimum Prune Version Number | Notes |
 |---|---|---|
+| v0.9.6+ | v1.2.1 | Adds knowledge base age-retention, orphaned KB-metadata cleanup, orphaned-memories cleanup, and a separate `--exempt-pinned-chats` flag. Minimum raised to 0.9.6 because orphaned-memories cleanup on Qdrant relies on Open WebUI's memory delete-by-id fix (shipped in 0.9.6); KB age-retention and KB-metadata cleanup also assume 0.9.6 KB-deletion semantics. [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.2.1) |
 | v0.9.0+ | v1.2.0 | Adds automation and automation_run table cleanup and full async rewrite — required by Open WebUI 0.9.0's async data layer — [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.2.0)  |
 | v0.8.0+ | v1.0.1 | [Release](https://github.com/Classic298/prune-open-webui/releases/tag/v1.0.1) |
 | v0.7.X  | v1.0.0 | Initial release |
