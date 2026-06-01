@@ -334,7 +334,9 @@ Safety Features:
         '--run-vacuum',
         action='store_true',
         default=False,
-        help='Run VACUUM to reclaim disk space (LOCKS DATABASE, use during maintenance)'
+        help=(
+            'Run VACUUM on main and vector databases to reclaim disk space (LOCKS DATABASE, use during maintenance)'
+        )
     )
 
     # Logging

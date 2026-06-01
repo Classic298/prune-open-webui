@@ -379,7 +379,7 @@ class InteractivePruneUI:
         """Configure VACUUM optimization."""
         console.print("\n[bold red]⚠ DATABASE VACUUM WARNING[/bold red]")
         console.print()
-        console.print("VACUUM reclaims disk space by rebuilding the database file.")
+        console.print("VACUUM reclaims disk space in the main and vector databases.")
         console.print()
         console.print("[bold yellow]⚠ Critical Warnings:[/bold yellow]")
         console.print("  • LOCKS the entire database during execution")
