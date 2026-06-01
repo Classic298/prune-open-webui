@@ -901,24 +901,6 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
                 if self.session:
                     self.session.rollback()
 
-            # PostgreSQL-specific optimization (if we have access to session)
-            # VACUUM must run in autocommit mode (outside transaction)
-            try:
-                if self.session:
-                    engine = self.session.get_bind()
-                    raw_connection = engine.raw_connection()
-                    try:
-                        raw_connection.set_isolation_level(0)  # AUTOCOMMIT mode
-                        cursor = raw_connection.cursor()
-                        cursor.execute("VACUUM ANALYZE document_chunk")
-                        cursor.close()
-                        raw_connection.commit()
-                        log.debug("Executed VACUUM ANALYZE on document_chunk table")
-                    finally:
-                        raw_connection.close()
-            except Exception as e:
-                log.warning(f"Failed to VACUUM PGVector table: {e}")
-
             total_deleted = deleted_count + orphaned_chunks_deleted
             if total_deleted > 0:
                 log.info(
@@ -2082,5 +2064,4 @@ def get_vector_database_cleaner(
             f"No specific cleaner for vector database type: {vector_db_type}, using no-op cleaner"
         )
         return NoOpVectorDatabaseCleaner()
-
 

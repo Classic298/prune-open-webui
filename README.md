@@ -539,7 +539,7 @@ When you delete a user, **ALL their data is deleted**:
 ### ⚠️ VACUUM Locks Database
 
 When `--run-vacuum` is enabled:
-- **Entire database is locked** during operation
+- **Main and vector databases may be locked** during operation
 - **All users will experience errors**
 - Can take **5-30+ minutes** (or longer)
 - **Only use during scheduled maintenance windows**
