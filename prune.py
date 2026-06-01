@@ -193,15 +193,13 @@ GETTING HELP
 
 Documentation:
   • README.md - Complete usage guide
-  • ANALYSIS.md - Technical details and feasibility analysis
-  • FEATURES.md - Complete feature catalog
-  • example_cron.txt - Automation examples
+  • COMPATIBILITY.md - Version compatibility matrix
 
 For detailed non-interactive options:
     python standalone_prune.py --help
 
 For more information, visit:
-    https://github.com/open-webui/open-webui
+    https://github.com/Classic298/prune-open-webui
 """
     print(help_text)
 

@@ -130,21 +130,17 @@ def main():
         "prune_core.py",
         "prune_models.py",
         "prune_operations.py",
+        "prune_imports.py",
+        "prune_export.py",
         "prune_cli_interactive.py",
         "standalone_prune.py",
         "prune.py",
-        "test_prune.py",
     ]
 
     # Documentation files
     doc_files = [
         "README.md",
-        "USAGE_GUIDE.md",
-        "ANALYSIS.md",
-        "FEATURES.md",
-        "WARNINGS.md",
-        "IMPLEMENTATION_SUMMARY.md",
-        "example_cron.txt",
+        "COMPATIBILITY.md",
     ]
 
     # Utility files
@@ -166,7 +162,6 @@ def main():
                 "prune.py",
                 "prune_cli_interactive.py",
                 "standalone_prune.py",
-                "test_prune.py",
             ]:
                 test_has_shebang(filepath)
                 test_executable(filepath)
@@ -241,7 +236,7 @@ def main():
         ("prune_operations.py", "get_active_file_ids", "File ID collection"),
         ("standalone_prune.py", "argparse", "CLI arguments"),
         ("prune_cli_interactive.py", "rich", "Interactive UI"),
-        ("test_prune.py", "unittest", "Test framework"),
+        ("prune_export.py", "PreviewExporter", "CSV preview export"),
     ]
 
     for filename, search_term, description in checks:
