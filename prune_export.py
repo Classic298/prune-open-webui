@@ -25,12 +25,21 @@ log = logging.getLogger(__name__)
 # Import Open WebUI modules using compatibility layer
 try:
     from prune_imports import (
-        Users, Chat, Chats, File, Files, Note, Notes,
-        Prompt, Prompts, Model, Models, Knowledge, Knowledges,
-        Function, Functions, Tool, Tools, Skill, Skills,
-        Automation, AutomationRun,
-        Folder, Folders, ChatMessage,
-        get_async_db, get_async_db_context, CACHE_DIR,
+        Users,
+        Chat,
+        File,
+        Note,
+        Prompt,
+        Model,
+        Knowledge,
+        Function,
+        Tool,
+        Skill,
+        Automation,
+        AutomationRun,
+        ChatMessage,
+        get_async_db,
+        CACHE_DIR,
     )
 except ImportError as e:
     log.error(f"Failed to import Open WebUI modules: {e}")
@@ -38,7 +47,13 @@ except ImportError as e:
 
 from prune_models import PruneDataForm, PrunePreviewResult
 from prune_core import VectorDatabaseCleaner
-from prune_operations import get_all_folders, stream_rows, iter_storage_objects, _get_active_file_paths, get_memory_ids_by_user
+from prune_operations import (
+    get_all_folders,
+    stream_rows,
+    iter_storage_objects,
+    _get_active_file_paths,
+    get_memory_ids_by_user,
+)
 
 
 # Row format for the exported CSV
@@ -112,7 +127,9 @@ class PreviewExporter:
 
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["category", "id", "name", "owner_id", "size_bytes", "reason"])
+            writer.writerow(
+                ["category", "id", "name", "owner_id", "size_bytes", "reason"]
+            )
 
             # Each async generator yields ExportRow tuples one at a time.
             # Only one category is iterated at a time — previous batches are GC'd.
@@ -184,21 +201,26 @@ class PreviewExporter:
                 conditions = [Chat.updated_at < cutoff_time]
 
                 if self.form_data.exempt_archived_chats:
-                    conditions.append(or_(Chat.archived == False, Chat.archived == None))
+                    conditions.append(
+                        or_(Chat.archived == False, Chat.archived == None)
+                    )
 
-                if self.form_data.exempt_pinned_chats and hasattr(Chat, 'pinned'):
+                if self.form_data.exempt_pinned_chats and hasattr(Chat, "pinned"):
                     conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
 
                 if self.form_data.exempt_chats_in_folders:
                     folder_conditions = []
-                    if hasattr(Chat, 'folder_id'):
+                    if hasattr(Chat, "folder_id"):
                         folder_conditions.append(Chat.folder_id == None)
                     if folder_conditions:
                         conditions.append(and_(*folder_conditions))
 
                 async for chat_id, title, user_id in stream_rows(
-                    db, Chat.id, Chat.title, Chat.user_id,
-                    filter_clause=and_(*conditions)
+                    db,
+                    Chat.id,
+                    Chat.title,
+                    Chat.user_id,
+                    filter_clause=and_(*conditions),
                 ):
                     display_title = (title or "")[:100]
                     yield ExportRow(
@@ -219,14 +241,19 @@ class PreviewExporter:
             return
 
         age_field = self.form_data.knowledge_bases_age_field
-        age_col = Knowledge.updated_at if age_field == "updated_at" else Knowledge.created_at
+        age_col = (
+            Knowledge.updated_at if age_field == "updated_at" else Knowledge.created_at
+        )
         cutoff_time = int(time.time()) - (days * 86400)
 
         try:
             async with get_async_db() as db:
                 async for kb_id, name, user_id in stream_rows(
-                    db, Knowledge.id, Knowledge.name, Knowledge.user_id,
-                    filter_clause=(age_col < cutoff_time)
+                    db,
+                    Knowledge.id,
+                    Knowledge.name,
+                    Knowledge.user_id,
+                    filter_clause=(age_col < cutoff_time),
                 ):
                     yield ExportRow(
                         category="old_knowledge_base",
@@ -250,8 +277,11 @@ class PreviewExporter:
         try:
             async with get_async_db() as db:
                 async for chat_id, title, user_id in stream_rows(
-                    db, Chat.id, Chat.title, Chat.user_id,
-                    filter_clause=not_(Chat.user_id.in_(self.active_user_ids))
+                    db,
+                    Chat.id,
+                    Chat.title,
+                    Chat.user_id,
+                    filter_clause=not_(Chat.user_id.in_(self.active_user_ids)),
                 ):
                     display_title = (title or "")[:100]
                     yield ExportRow(
@@ -279,9 +309,8 @@ class PreviewExporter:
                     # Normalize to str — ORM can return uuid.UUID on Postgres
                     file_id_str = str(file_id) if file_id else ""
                     user_id_str = str(user_id) if user_id else ""
-                    is_orphaned = (
-                        (file_id_str not in self.active_file_ids)
-                        or (user_id_str not in self.active_user_ids)
+                    is_orphaned = (file_id_str not in self.active_file_ids) or (
+                        user_id_str not in self.active_user_ids
                     )
                     if not is_orphaned:
                         continue
@@ -310,13 +339,62 @@ class PreviewExporter:
 
         # Map: (category_name, orm_class, id_attr, name_attr, user_id_attr, enabled_flag)
         item_types = [
-            ("orphaned_kb", Knowledge, "id", "name", "user_id", self.form_data.delete_orphaned_knowledge_bases),
-            ("orphaned_tool", Tool, "id", "name", "user_id", self.form_data.delete_orphaned_tools),
-            ("orphaned_function", Function, "id", "name", "user_id", self.form_data.delete_orphaned_functions),
-            ("orphaned_prompt", Prompt, "command", "command", "user_id", self.form_data.delete_orphaned_prompts),
-            ("orphaned_model", Model, "id", "name", "user_id", self.form_data.delete_orphaned_models),
-            ("orphaned_note", Note, "id", "title", "user_id", self.form_data.delete_orphaned_notes),
-            ("orphaned_skill", Skill, "id", "name", "user_id", self.form_data.delete_orphaned_skills),
+            (
+                "orphaned_kb",
+                Knowledge,
+                "id",
+                "name",
+                "user_id",
+                self.form_data.delete_orphaned_knowledge_bases,
+            ),
+            (
+                "orphaned_tool",
+                Tool,
+                "id",
+                "name",
+                "user_id",
+                self.form_data.delete_orphaned_tools,
+            ),
+            (
+                "orphaned_function",
+                Function,
+                "id",
+                "name",
+                "user_id",
+                self.form_data.delete_orphaned_functions,
+            ),
+            (
+                "orphaned_prompt",
+                Prompt,
+                "command",
+                "command",
+                "user_id",
+                self.form_data.delete_orphaned_prompts,
+            ),
+            (
+                "orphaned_model",
+                Model,
+                "id",
+                "name",
+                "user_id",
+                self.form_data.delete_orphaned_models,
+            ),
+            (
+                "orphaned_note",
+                Note,
+                "id",
+                "title",
+                "user_id",
+                self.form_data.delete_orphaned_notes,
+            ),
+            (
+                "orphaned_skill",
+                Skill,
+                "id",
+                "name",
+                "user_id",
+                self.form_data.delete_orphaned_skills,
+            ),
         ]
 
         for category, cls, id_attr, name_attr, uid_attr, enabled in item_types:
@@ -330,8 +408,11 @@ class PreviewExporter:
 
                 async with get_async_db() as db:
                     async for item_id, item_name, user_id in stream_rows(
-                        db, id_col, name_col, uid_col,
-                        filter_clause=not_(uid_col.in_(self.active_user_ids))
+                        db,
+                        id_col,
+                        name_col,
+                        uid_col,
+                        filter_clause=not_(uid_col.in_(self.active_user_ids)),
                     ):
                         yield ExportRow(
                             category=category,
@@ -445,8 +526,10 @@ class PreviewExporter:
         try:
             async with get_async_db() as db:
                 async for message_id, chat_id in stream_rows(
-                    db, ChatMessage.id, ChatMessage.chat_id,
-                    filter_clause=not_(ChatMessage.chat_id.in_(select(Chat.id)))
+                    db,
+                    ChatMessage.id,
+                    ChatMessage.chat_id,
+                    filter_clause=not_(ChatMessage.chat_id.in_(select(Chat.id))),
                 ):
                     yield ExportRow(
                         category="orphaned_chat_message",
@@ -457,7 +540,9 @@ class PreviewExporter:
                         reason="parent chat no longer exists",
                     )
         except Exception as e:
-            log.debug(f"Error iterating orphaned chat messages (table may not exist): {e}")
+            log.debug(
+                f"Error iterating orphaned chat messages (table may not exist): {e}"
+            )
 
     async def _iter_orphaned_automations(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned automation (owner no longer exists).
@@ -497,7 +582,9 @@ class PreviewExporter:
             self._all_automation_ids = all_ids
             self._orphaned_automation_ids = orphaned_ids
         except Exception as e:
-            log.debug(f"Error iterating orphaned automations (table may not exist): {e}")
+            log.debug(
+                f"Error iterating orphaned automations (table may not exist): {e}"
+            )
 
     async def _iter_orphaned_automation_runs(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned automation run.
@@ -508,12 +595,16 @@ class PreviewExporter:
         Reuses ID sets cached by _iter_orphaned_automations to avoid
         a redundant second scan of the automations table.
         """
-        if not self.form_data.delete_orphaned_automations or AutomationRun is None or Automation is None:
+        if (
+            not self.form_data.delete_orphaned_automations
+            or AutomationRun is None
+            or Automation is None
+        ):
             return
 
         # Use cached sets from _iter_orphaned_automations if available
-        all_automation_ids = getattr(self, '_all_automation_ids', None)
-        orphaned_automation_ids = getattr(self, '_orphaned_automation_ids', None)
+        all_automation_ids = getattr(self, "_all_automation_ids", None)
+        orphaned_automation_ids = getattr(self, "_orphaned_automation_ids", None)
 
         try:
             async with get_async_db() as db:
@@ -551,7 +642,9 @@ class PreviewExporter:
                         reason=reason,
                     )
         except Exception as e:
-            log.debug(f"Error iterating orphaned automation runs (table may not exist): {e}")
+            log.debug(
+                f"Error iterating orphaned automation runs (table may not exist): {e}"
+            )
 
     async def _iter_audio_cache(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each old audio cache file."""

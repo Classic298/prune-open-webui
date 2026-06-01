@@ -10,7 +10,7 @@ import inspect
 import logging
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Iterator, Optional, Set, Tuple, Callable, Any
+from typing import Iterator, Optional, Set, Tuple, Callable, Any
 from sqlalchemy import select, text, func, and_, or_, not_, delete, update
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,13 +28,15 @@ def _is_table_missing_error(exc: Exception) -> bool:
     # SQLite: "no such table: xxx"
     # PostgreSQL: 'relation "xxx" does not exist' / 'undefined table'
     return (
-        'no such table' in msg
-        or ('relation' in msg and 'does not exist' in msg)
-        or 'undefined table' in msg
+        "no such table" in msg
+        or ("relation" in msg and "does not exist" in msg)
+        or "undefined table" in msg
     )
 
 
-async def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: float = 0.5) -> Any:
+async def retry_on_db_lock(
+    func: Callable, max_retries: int = 3, base_delay: float = 0.5
+) -> Any:
     """
     Retry an async database operation if it fails due to database lock.
     Uses exponential backoff: 0.5s, 1s, 2s
@@ -56,9 +58,11 @@ async def retry_on_db_lock(func: Callable, max_retries: int = 3, base_delay: flo
             return await func()
         except OperationalError as e:
             last_exception = e
-            if 'database is locked' in str(e).lower() and attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
-                log.warning(f"Database locked, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+            if "database is locked" in str(e).lower() and attempt < max_retries:
+                delay = base_delay * (2**attempt)
+                log.warning(
+                    f"Database locked, retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                )
                 await asyncio.sleep(delay)
             else:
                 raise
@@ -126,13 +130,33 @@ async def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
-        Users, Chat, Chats, ChatFile, ChatMessage, Message, Memory, File, Files, Note, Notes,
-        Prompt, Prompts, Model, Models, Knowledge, Knowledges,
-        Function, Functions, Tool, Tools, Skill, Skills,
-        Automation, AutomationRun, Automations, AutomationRuns,
-        Folder, Folders, FolderModel, Storage,
-        get_async_db, get_async_db_context,
-        CACHE_DIR, UPLOAD_DIR, STORAGE_PROVIDER, S3_KEY_PREFIX,
+        Users,
+        Chat,
+        ChatMessage,
+        Message,
+        Memory,
+        File,
+        Files,
+        Note,
+        Prompt,
+        Model,
+        Knowledge,
+        Knowledges,
+        Function,
+        Tool,
+        Skill,
+        Automation,
+        AutomationRun,
+        Folder,
+        Folders,
+        FolderModel,
+        Storage,
+        get_async_db,
+        get_async_db_context,
+        CACHE_DIR,
+        UPLOAD_DIR,
+        STORAGE_PROVIDER,
+        S3_KEY_PREFIX,
     )
 except ImportError as e:
     log.error(f"Failed to import Open WebUI modules: {e}")
@@ -150,6 +174,7 @@ async def get_memory_ids_by_user(active_user_ids: Optional[Set[str]] = None) -> 
     (each with at least an empty set) so callers probe every active user's
     memory collection, including users who deleted all of their memories.
     """
+
     async def _scan():
         result = {}
         if active_user_ids is not None:
@@ -161,6 +186,7 @@ async def get_memory_ids_by_user(active_user_ids: Optional[Set[str]] = None) -> 
                     continue
                 result.setdefault(uid_str, set()).add(str(mid))
         return result
+
     return await retry_on_db_lock(_scan)
 
 
@@ -174,12 +200,14 @@ async def get_kb_user_map() -> dict:
     Raises on failure — callers (prune execution) must not proceed with an
     empty preservation set, as that could cause over-deletion.
     """
+
     async def _scan():
         result = {}
         async with get_async_db() as db:
             async for kb_id, uid in stream_rows(db, Knowledge.id, Knowledge.user_id):
                 result[str(kb_id)] = str(uid)
         return result
+
     return await retry_on_db_lock(_scan)
 
 
@@ -194,9 +222,9 @@ async def get_all_folders(db: Optional[AsyncSession] = None):
     """
     try:
         # Try new API first - if get_all_folders exists, use it
-        if hasattr(Folders, 'get_all_folders'):
+        if hasattr(Folders, "get_all_folders"):
             # Check if the method supports db parameter
-            if 'db' in inspect.signature(Folders.get_all_folders).parameters:
+            if "db" in inspect.signature(Folders.get_all_folders).parameters:
                 return await Folders.get_all_folders(db=db)
             else:
                 return await Folders.get_all_folders()
@@ -213,7 +241,10 @@ async def get_all_folders(db: Optional[AsyncSession] = None):
 
 
 async def count_inactive_users(
-    inactive_days: Optional[int], exempt_admin: bool, exempt_pending: bool, all_users=None
+    inactive_days: Optional[int],
+    exempt_admin: bool,
+    exempt_pending: bool,
+    all_users=None,
 ) -> int:
     """Count users that would be deleted for inactivity.
 
@@ -269,12 +300,12 @@ async def count_old_chats(
             if exempt_archived:
                 conditions.append(or_(Chat.archived == False, Chat.archived == None))
 
-            if exempt_pinned and hasattr(Chat, 'pinned'):
+            if exempt_pinned and hasattr(Chat, "pinned"):
                 conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
 
             if exempt_in_folders:
                 folder_conditions = []
-                if hasattr(Chat, 'folder_id'):
+                if hasattr(Chat, "folder_id"):
                     folder_conditions.append(Chat.folder_id == None)
                 if folder_conditions:
                     conditions.append(and_(*folder_conditions))
@@ -338,7 +369,8 @@ async def _dereference_knowledge_from_models(deleted_kb_ids: Set[str]) -> int:
                 if not isinstance(kb_list, list) or not kb_list:
                     continue
                 new_list = [
-                    k for k in kb_list
+                    k
+                    for k in kb_list
                     if not (isinstance(k, dict) and str(k.get("id")) in deleted_kb_ids)
                 ]
                 if len(new_list) != len(kb_list):
@@ -384,7 +416,9 @@ async def delete_old_knowledge_bases(
                     if vector_cleaner is not None:
                         vector_cleaner.delete_collection(kb_id)
                 except Exception as e:
-                    log.warning(f"Failed to delete vector collection for KB {kb_id}: {e}")
+                    log.warning(
+                        f"Failed to delete vector collection for KB {kb_id}: {e}"
+                    )
                 await Knowledges.delete_knowledge_by_id(kb_id, db=db)
                 deleted_ids.append(str(kb_id))
                 deleted += 1
@@ -407,9 +441,7 @@ async def delete_old_knowledge_bases(
 
 
 async def count_orphaned_records(
-    form_data: PruneDataForm,
-    active_file_ids: Set[str],
-    active_user_ids: Set[str]
+    form_data: PruneDataForm, active_file_ids: Set[str], active_user_ids: Set[str]
 ) -> dict:
     """Count orphaned database records that would be deleted.
 
@@ -451,23 +483,33 @@ async def count_orphaned_records(
 
             # Count other orphaned records by user ownership
             _table_flag_map = [
-                ("chats",          Chat,      Chat.user_id,      form_data.delete_orphaned_chats),
-                ("tools",          Tool,      Tool.user_id,      form_data.delete_orphaned_tools),
-                ("functions",      Function,  Function.user_id,  form_data.delete_orphaned_functions),
-                ("prompts",        Prompt,    Prompt.user_id,    form_data.delete_orphaned_prompts),
-                ("knowledge_bases", Knowledge, Knowledge.user_id, form_data.delete_orphaned_knowledge_bases),
-                ("models",         Model,     Model.user_id,     form_data.delete_orphaned_models),
-                ("notes",          Note,      Note.user_id,      form_data.delete_orphaned_notes),
-                ("skills",         Skill,     Skill.user_id,     form_data.delete_orphaned_skills),
-                ("folders",        Folder,    Folder.user_id,    form_data.delete_orphaned_folders),
+                ("chats", Chat, Chat.user_id, form_data.delete_orphaned_chats),
+                ("tools", Tool, Tool.user_id, form_data.delete_orphaned_tools),
+                (
+                    "functions",
+                    Function,
+                    Function.user_id,
+                    form_data.delete_orphaned_functions,
+                ),
+                ("prompts", Prompt, Prompt.user_id, form_data.delete_orphaned_prompts),
+                (
+                    "knowledge_bases",
+                    Knowledge,
+                    Knowledge.user_id,
+                    form_data.delete_orphaned_knowledge_bases,
+                ),
+                ("models", Model, Model.user_id, form_data.delete_orphaned_models),
+                ("notes", Note, Note.user_id, form_data.delete_orphaned_notes),
+                ("skills", Skill, Skill.user_id, form_data.delete_orphaned_skills),
+                ("folders", Folder, Folder.user_id, form_data.delete_orphaned_folders),
             ]
 
             for key, table_cls, user_id_col, enabled in _table_flag_map:
                 if enabled and active_user_ids:
                     result = await db.execute(
-                        select(func.count()).select_from(table_cls).where(
-                            not_(user_id_col.in_(active_user_ids))
-                        )
+                        select(func.count())
+                        .select_from(table_cls)
+                        .where(not_(user_id_col.in_(active_user_ids)))
                     )
                     counts[key] = result.scalar_one_or_none() or 0
 
@@ -584,7 +626,7 @@ async def delete_orphaned_chat_messages() -> int:
             deleted = 0
             batch_size = 500
             for i in range(0, len(orphaned_ids), batch_size):
-                batch = orphaned_ids[i:i + batch_size]
+                batch = orphaned_ids[i : i + batch_size]
                 result = await db.execute(
                     delete(ChatMessage).where(ChatMessage.id.in_(batch))
                 )
@@ -611,7 +653,9 @@ def iter_storage_objects() -> Iterator[Tuple[str, str, Optional[int]]]:
     provider = (STORAGE_PROVIDER or "local").lower()
 
     if provider == "local":
-        upload_dir = Path(UPLOAD_DIR) if UPLOAD_DIR else (Path(CACHE_DIR).parent / "uploads")
+        upload_dir = (
+            Path(UPLOAD_DIR) if UPLOAD_DIR else (Path(CACHE_DIR).parent / "uploads")
+        )
         if not upload_dir.exists():
             return
         for p in upload_dir.iterdir():
@@ -644,7 +688,11 @@ def iter_storage_objects() -> Iterator[Tuple[str, str, Optional[int]]]:
     if provider == "gcs":
         bucket_name = Storage.bucket_name
         for blob in Storage.bucket.list_blobs():
-            yield (f"gs://{bucket_name}/{blob.name}", blob.name, getattr(blob, "size", None))
+            yield (
+                f"gs://{bucket_name}/{blob.name}",
+                blob.name,
+                getattr(blob, "size", None),
+            )
         return
 
     if provider == "azure":
@@ -672,10 +720,8 @@ async def _get_active_file_paths(active_file_ids: Set[str]) -> Set[str]:
             ids_list = list(active_file_ids)
             batch_size = 1000
             for i in range(0, len(ids_list), batch_size):
-                batch = ids_list[i:i + batch_size]
-                result = await db.execute(
-                    select(File.path).where(File.id.in_(batch))
-                )
+                batch = ids_list[i : i + batch_size]
+                result = await db.execute(select(File.path).where(File.id.in_(batch)))
                 for (path,) in result:
                     if path:
                         active_paths.add(path)
@@ -749,6 +795,7 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
         async def _load_file_ids():
             async with get_async_db() as db:
                 return {str(fid) async for (fid,) in stream_rows(db, File.id)}
+
         all_file_ids = await retry_on_db_lock(_load_file_ids)
         log.debug(f"Preloaded {len(all_file_ids)} file IDs for validation")
 
@@ -772,7 +819,9 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
         # and avoids loading full File ORM objects (large JSONB data/meta columns).
         async def scan_knowledge_files():
             async with get_async_db() as db:
-                result = await db.execute(text("SELECT knowledge_id, file_id FROM knowledge_file"))
+                result = await db.execute(
+                    text("SELECT knowledge_id, file_id FROM knowledge_file")
+                )
                 kf_count = 0
                 while True:
                     rows = result.fetchmany(5000)
@@ -786,13 +835,17 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                         kb_id_str = str(kb_id) if kb_id else None
                         if kb_id_str in active_kb_ids and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
-                log.debug(f"Scanned {kf_count} knowledge_file entries for file references")
+                log.debug(
+                    f"Scanned {kf_count} knowledge_file entries for file references"
+                )
 
         try:
             await retry_on_db_lock(scan_knowledge_files)
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
-                log.debug(f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}")
+                log.debug(
+                    f"knowledge_file table does not exist (pre-v0.6.41 schema): {e}"
+                )
             else:
                 raise  # Transient DB errors must abort, not produce incomplete sets
 
@@ -815,7 +868,9 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                         file_id_str = str(file_id) if file_id else None
                         if file_id_str and file_id_str in all_file_ids:
                             active_file_ids.add(file_id_str)
-                log.debug(f"Scanned {chat_file_count} chat_file entries for file references")
+                log.debug(
+                    f"Scanned {chat_file_count} chat_file entries for file references"
+                )
 
         try:
             await retry_on_db_lock(scan_chat_files)
@@ -840,9 +895,13 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                     if not chat_dict or not isinstance(chat_dict, dict):
                         continue
                     try:
-                        collect_file_ids_from_dict(chat_dict, active_file_ids, all_file_ids)
+                        collect_file_ids_from_dict(
+                            chat_dict, active_file_ids, all_file_ids
+                        )
                     except Exception as e:
-                        log.debug(f"Error processing chat {chat_id} for file references: {e}")
+                        log.debug(
+                            f"Error processing chat {chat_id} for file references: {e}"
+                        )
             return chat_count
 
         chat_count = await retry_on_db_lock(scan_chats)
@@ -850,9 +909,10 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
 
         # Scan folders for file references
         # Pre-check ORM attributes — Folder.items/data may not exist on older schemas
-        has_folder_items = hasattr(Folder, 'items')
-        has_folder_data = hasattr(Folder, 'data')
+        has_folder_items = hasattr(Folder, "items")
+        has_folder_data = hasattr(Folder, "data")
         if has_folder_items or has_folder_data:
+
             async def scan_folders():
                 async with get_async_db() as db:
                     columns = [Folder.id]
@@ -868,16 +928,24 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                             col_idx += 1
                             if items_dict:
                                 try:
-                                    collect_file_ids_from_dict(items_dict, active_file_ids, all_file_ids)
+                                    collect_file_ids_from_dict(
+                                        items_dict, active_file_ids, all_file_ids
+                                    )
                                 except Exception as e:
-                                    log.debug(f"Error processing folder {folder_id} items: {e}")
+                                    log.debug(
+                                        f"Error processing folder {folder_id} items: {e}"
+                                    )
                         if has_folder_data:
                             data_dict = row[col_idx]
                             if data_dict:
                                 try:
-                                    collect_file_ids_from_dict(data_dict, active_file_ids, all_file_ids)
+                                    collect_file_ids_from_dict(
+                                        data_dict, active_file_ids, all_file_ids
+                                    )
                                 except Exception as e:
-                                    log.debug(f"Error processing folder {folder_id} data: {e}")
+                                    log.debug(
+                                        f"Error processing folder {folder_id} data: {e}"
+                                    )
 
             try:
                 await retry_on_db_lock(scan_folders)
@@ -890,18 +958,26 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
             log.debug("Folder.items/data attributes not present — skipping folder scan")
 
         # Scan standalone messages for file references
-        if hasattr(Message, 'data'):
+        if hasattr(Message, "data"):
+
             async def scan_messages():
                 async with get_async_db() as db:
                     async for message_id, message_data_dict in stream_rows(
-                        db, Message.id, Message.data,
-                        filter_clause=Message.data.isnot(None), batch_size=100
+                        db,
+                        Message.id,
+                        Message.data,
+                        filter_clause=Message.data.isnot(None),
+                        batch_size=100,
                     ):
                         if message_data_dict:
                             try:
-                                collect_file_ids_from_dict(message_data_dict, active_file_ids, all_file_ids)
+                                collect_file_ids_from_dict(
+                                    message_data_dict, active_file_ids, all_file_ids
+                                )
                             except Exception as e:
-                                log.debug(f"Error processing message {message_id} data: {e}")
+                                log.debug(
+                                    f"Error processing message {message_id} data: {e}"
+                                )
 
             try:
                 await retry_on_db_lock(scan_messages)
@@ -914,9 +990,10 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
             log.debug("Message.data attribute not present — skipping message scan")
 
         # Scan models for file references in params and meta fields
-        has_model_params = hasattr(Model, 'params')
-        has_model_meta = hasattr(Model, 'meta')
+        has_model_params = hasattr(Model, "params")
+        has_model_meta = hasattr(Model, "meta")
         if has_model_params or has_model_meta:
+
             async def scan_models():
                 async with get_async_db() as db:
                     columns = [Model.id]
@@ -934,16 +1011,24 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                             col_idx += 1
                             if params_dict and isinstance(params_dict, dict):
                                 try:
-                                    collect_file_ids_from_dict(params_dict, active_file_ids, all_file_ids)
+                                    collect_file_ids_from_dict(
+                                        params_dict, active_file_ids, all_file_ids
+                                    )
                                 except Exception as e:
-                                    log.debug(f"Error processing model {model_id} params: {e}")
+                                    log.debug(
+                                        f"Error processing model {model_id} params: {e}"
+                                    )
                         if has_model_meta:
                             meta_dict = row[col_idx]
                             if meta_dict and isinstance(meta_dict, dict):
                                 try:
-                                    collect_file_ids_from_dict(meta_dict, active_file_ids, all_file_ids)
+                                    collect_file_ids_from_dict(
+                                        meta_dict, active_file_ids, all_file_ids
+                                    )
                                 except Exception as e:
-                                    log.debug(f"Error processing model {model_id} meta: {e}")
+                                    log.debug(
+                                        f"Error processing model {model_id} meta: {e}"
+                                    )
                     log.debug(f"Scanned {model_count} models for file references")
 
             try:
@@ -965,7 +1050,9 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
     return active_file_ids
 
 
-async def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[AsyncSession] = None) -> bool:
+async def safe_delete_file_by_id(
+    file_id: str, vector_cleaner, db: Optional[AsyncSession] = None
+) -> bool:
     """
     Safely delete a file record and its associated vector collections and physical storage.
 
@@ -992,14 +1079,20 @@ async def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Asyn
             # Clean KB vector embeddings (mirrors delete_file_by_id endpoint logic)
             # This removes embeddings from knowledge base collections that reference this file
             try:
-                knowledges = await Knowledges.get_knowledges_by_file_id(file_id, db=session)
+                knowledges = await Knowledges.get_knowledges_by_file_id(
+                    file_id, db=session
+                )
                 for kb in knowledges:
                     try:
                         # Delete by file_id filter
-                        vector_cleaner.delete(collection_name=kb.id, filter={"file_id": file_id})
+                        vector_cleaner.delete(
+                            collection_name=kb.id, filter={"file_id": file_id}
+                        )
                         # Also delete by hash if available (covers hash-based lookups)
                         if file_record.hash:
-                            vector_cleaner.delete(collection_name=kb.id, filter={"hash": file_record.hash})
+                            vector_cleaner.delete(
+                                collection_name=kb.id, filter={"hash": file_record.hash}
+                            )
                     except Exception as e:
                         log.debug(f"KB embedding cleanup for {kb.id}: {e}")
             except Exception as e:
@@ -1026,7 +1119,9 @@ async def safe_delete_file_by_id(file_id: str, vector_cleaner, db: Optional[Asyn
         return False
 
 
-async def delete_user_files(user_id: str, vector_cleaner, db: Optional[AsyncSession] = None) -> int:
+async def delete_user_files(
+    user_id: str, vector_cleaner, db: Optional[AsyncSession] = None
+) -> int:
     """
     Delete all files owned by a user.
 
@@ -1092,7 +1187,7 @@ async def delete_inactive_users(
     inactive_days: int,
     vector_cleaner=None,
     exempt_admin: bool = True,
-    exempt_pending: bool = True
+    exempt_pending: bool = True,
 ) -> int:
     """
     Delete users who have been inactive for the specified number of days.
@@ -1146,7 +1241,9 @@ async def delete_inactive_users(
                         # Delete user's files first (if vector_cleaner provided)
                         # This ensures proper cleanup of embeddings, physical storage, etc.
                         if vector_cleaner is not None:
-                            user_files_deleted = await delete_user_files(user.id, vector_cleaner, db=db)
+                            user_files_deleted = await delete_user_files(
+                                user.id, vector_cleaner, db=db
+                            )
 
                         # Delete user's automations and their runs
                         await delete_user_automations(user.id, db=db)
@@ -1172,7 +1269,9 @@ async def delete_inactive_users(
     return deleted_count
 
 
-async def delete_user_automations(user_id: str, db: Optional[AsyncSession] = None) -> int:
+async def delete_user_automations(
+    user_id: str, db: Optional[AsyncSession] = None
+) -> int:
     """
     Delete all automations and their runs for a given user.
 
@@ -1206,7 +1305,7 @@ async def delete_user_automations(user_id: str, db: Optional[AsyncSession] = Non
             if AutomationRun is not None:
                 runs_deleted = 0
                 for i in range(0, len(automation_ids), batch_size):
-                    batch = automation_ids[i:i + batch_size]
+                    batch = automation_ids[i : i + batch_size]
                     result = await session.execute(
                         delete(AutomationRun).where(
                             AutomationRun.automation_id.in_(batch)
@@ -1284,14 +1383,14 @@ async def delete_orphaned_automations(active_user_ids: Set[str]) -> int:
             return 0
         try:
             result = await db.execute(
-                delete(AutomationRun).where(
-                    AutomationRun.automation_id.in_(batch)
-                )
+                delete(AutomationRun).where(AutomationRun.automation_id.in_(batch))
             )
             return result.rowcount
         except _TABLE_MISSING_ERRORS as e:
             if _is_table_missing_error(e):
-                log.debug(f"automation_run table not available, skipping run cleanup: {e}")
+                log.debug(
+                    f"automation_run table not available, skipping run cleanup: {e}"
+                )
                 return 0
             raise
 
@@ -1445,12 +1544,16 @@ def cleanup_audio_cache(max_age_days: Optional[int] = 30) -> int:
                         file_path.unlink()
                         deleted_count += 1
                         total_size_deleted += file_size
-                        log.debug(f"Deleted audio cache file: {file_path} ({file_size} bytes)")
+                        log.debug(
+                            f"Deleted audio cache file: {file_path} ({file_size} bytes)"
+                        )
                     except Exception as e:
                         log.error(f"Failed to delete audio file {file_path}: {e}")
 
         except Exception as e:
             log.error(f"Error cleaning audio directory {audio_dir}: {e}")
 
-    log.info(f"Audio cache cleanup: deleted {deleted_count} files, freed {total_size_deleted} bytes")
+    log.info(
+        f"Audio cache cleanup: deleted {deleted_count} files, freed {total_size_deleted} bytes"
+    )
     return deleted_count

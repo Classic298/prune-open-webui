@@ -20,7 +20,6 @@ Usage:
 """
 
 import sys
-import argparse
 from pathlib import Path
 
 # Add parent to path for imports
@@ -31,6 +30,7 @@ sys.path.insert(0, str(REPO_ROOT))
 # Import main functions from both modes (may fail if dependencies missing)
 try:
     from prune_cli_interactive import main as interactive_main
+
     INTERACTIVE_AVAILABLE = True
 except ImportError:
     interactive_main = None
@@ -38,6 +38,7 @@ except ImportError:
 
 try:
     from standalone_prune import main as standalone_main
+
     STANDALONE_AVAILABLE = True
 except ImportError:
     standalone_main = None
@@ -47,10 +48,14 @@ except ImportError:
 def main():
     """Main entry point - route to interactive or non-interactive mode."""
     # Quick check for interactive mode
-    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ['--interactive', '-i']):
+    if len(sys.argv) == 1 or (
+        len(sys.argv) == 2 and sys.argv[1] in ["--interactive", "-i"]
+    ):
         # No arguments or just --interactive = run interactive mode
         if not INTERACTIVE_AVAILABLE or interactive_main is None:
-            print("ERROR: Cannot run interactive mode - prune_cli_interactive could not be imported")
+            print(
+                "ERROR: Cannot run interactive mode - prune_cli_interactive could not be imported"
+            )
             print("\nInteractive mode requires the 'rich' library.")
             print("Install it with: pip install rich")
             print("\nOr use non-interactive mode with command-line arguments:")
@@ -59,7 +64,7 @@ def main():
         return interactive_main()
 
     # Parse just enough to check if --help is requested
-    if '--help' in sys.argv or '-h' in sys.argv:
+    if "--help" in sys.argv or "-h" in sys.argv:
         show_help()
         return 0
 

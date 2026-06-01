@@ -62,25 +62,31 @@ class PruneLock:
         removes it and acquires a new lock.
         """
         if cls.LOCK_FILE is None:
-            raise RuntimeError("PruneLock not initialized. Call PruneLock.init() first.")
+            raise RuntimeError(
+                "PruneLock not initialized. Call PruneLock.init() first."
+            )
 
         try:
             # Check if lock file exists
             if cls.LOCK_FILE.exists():
                 # Read lock file to check if it's stale
                 try:
-                    with open(cls.LOCK_FILE, 'r') as f:
+                    with open(cls.LOCK_FILE, "r") as f:
                         lock_data = json.load(f)
-                        lock_time = datetime.fromisoformat(lock_data['timestamp'])
-                        operation_id = lock_data.get('operation_id', 'unknown')
+                        lock_time = datetime.fromisoformat(lock_data["timestamp"])
+                        operation_id = lock_data.get("operation_id", "unknown")
 
                         # Check if lock is stale
                         if datetime.utcnow() - lock_time > cls.LOCK_TIMEOUT:
-                            log.warning(f"Found stale lock from {lock_time} (operation {operation_id}), removing")
+                            log.warning(
+                                f"Found stale lock from {lock_time} (operation {operation_id}), removing"
+                            )
                             cls.LOCK_FILE.unlink()
                         else:
                             # Lock is still valid
-                            log.warning(f"Prune operation already in progress (started {lock_time}, operation {operation_id})")
+                            log.warning(
+                                f"Prune operation already in progress (started {lock_time}, operation {operation_id})"
+                            )
                             return False
                 except (json.JSONDecodeError, KeyError, ValueError) as e:
                     # Corrupt lock file, remove it
@@ -90,15 +96,15 @@ class PruneLock:
             # Create lock file
             operation_id = str(uuid.uuid4())[:8]
             lock_data = {
-                'timestamp': datetime.utcnow().isoformat(),
-                'operation_id': operation_id,
-                'pid': os.getpid()
+                "timestamp": datetime.utcnow().isoformat(),
+                "operation_id": operation_id,
+                "pid": os.getpid(),
             }
 
             # Ensure parent directory exists
             cls.LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(cls.LOCK_FILE, 'w') as f:
+            with open(cls.LOCK_FILE, "w") as f:
                 json.dump(lock_data, f)
 
             log.info(f"Acquired prune lock (operation {operation_id})")
@@ -161,11 +167,13 @@ class JSONFileIDExtractor:
 
 # UUID pattern for direct dict traversal (Phase 1.5 optimization)
 UUID_PATTERN = re.compile(
-    r'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$'
+    r"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
 )
 
 
-def collect_file_ids_from_dict(obj, out: Set[str], valid_ids: Set[str], _depth: int = 0) -> None:
+def collect_file_ids_from_dict(
+    obj, out: Set[str], valid_ids: Set[str], _depth: int = 0
+) -> None:
     """
     Recursively traverse dict/list structures and collect file IDs.
 
@@ -193,13 +201,13 @@ def collect_file_ids_from_dict(obj, out: Set[str], valid_ids: Set[str], _depth: 
         # Check individual file ID fields
         # valid_ids only contains real UUIDs from the database, so set lookup
         # alone is sufficient — no need for regex pre-validation
-        for field_name in ['id', 'file_id', 'fileId']:
+        for field_name in ["id", "file_id", "fileId"]:
             fid = obj.get(field_name)
             if isinstance(fid, str) and fid in valid_ids:
                 out.add(fid)
 
         # Check file ID array fields
-        for field_name in ['file_ids', 'fileIds']:
+        for field_name in ["file_ids", "fileIds"]:
             fid_array = obj.get(field_name)
             if isinstance(fid_array, list):
                 for fid in fid_array:
@@ -243,7 +251,7 @@ class VectorDatabaseCleaner(ABC):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """
         Count how many orphaned vector collections would be deleted.
@@ -263,7 +271,7 @@ class VectorDatabaseCleaner(ABC):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """
         Actually delete orphaned vector collections.
@@ -343,7 +351,7 @@ class VectorDatabaseCleaner(ABC):
 
         ids: Set[str] = set()
         raw = getattr(result, "ids", None) if result is not None else None
-        for entry in (raw or []):
+        for entry in raw or []:
             # GetResult.ids is List[List[str]] but some backends return a flat
             # list — handle both.
             if isinstance(entry, (list, tuple)):
@@ -423,7 +431,7 @@ class VectorDatabaseCleaner(ABC):
 
         ids: Set[str] = set()
         raw = getattr(result, "ids", None) if result is not None else None
-        for entry in (raw or []):
+        for entry in raw or []:
             if isinstance(entry, (list, tuple)):
                 ids.update(str(i) for i in entry if i)
             elif entry:
@@ -495,7 +503,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """Count orphaned ChromaDB collections for preview."""
         if not self.chroma_db_path.exists():
@@ -548,7 +556,10 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
                 dir_uuid = collection_dir.name
                 collection_name = uuid_to_collection.get(dir_uuid)
 
-                if collection_name is None or collection_name not in expected_collections:
+                if (
+                    collection_name is None
+                    or collection_name not in expected_collections
+                ):
                     yield (collection_name or dir_uuid, "chromadb")
         except Exception as e:
             log.debug(f"Error iterating orphaned ChromaDB collections: {e}")
@@ -557,7 +568,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """Actually delete orphaned ChromaDB collections and database records."""
         if not self.chroma_db_path.exists():
@@ -593,9 +604,13 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
                     try:
                         shutil.rmtree(collection_dir)
                         deleted_count += 1
-                        log.info(f"Deleted orphaned ChromaDB directory (no mapping): {dir_uuid}")
+                        log.info(
+                            f"Deleted orphaned ChromaDB directory (no mapping): {dir_uuid}"
+                        )
                     except Exception as e:
-                        error_msg = f"Failed to delete orphaned directory {dir_uuid}: {e}"
+                        error_msg = (
+                            f"Failed to delete orphaned directory {dir_uuid}: {e}"
+                        )
                         log.error(error_msg)
                         errors.append(error_msg)
 
@@ -603,13 +618,19 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
                     try:
                         shutil.rmtree(collection_dir)
                         deleted_count += 1
-                        log.info(f"Deleted orphaned ChromaDB collection directory: {collection_name} ({dir_uuid})")
+                        log.info(
+                            f"Deleted orphaned ChromaDB collection directory: {collection_name} ({dir_uuid})"
+                        )
                     except Exception as e:
-                        error_msg = f"Failed to delete collection directory {dir_uuid}: {e}"
+                        error_msg = (
+                            f"Failed to delete collection directory {dir_uuid}: {e}"
+                        )
                         log.error(error_msg)
                         errors.append(error_msg)
                 else:
-                    log.debug(f"Keeping expected collection: {collection_name} ({dir_uuid})")
+                    log.debug(
+                        f"Keeping expected collection: {collection_name} ({dir_uuid})"
+                    )
 
         except Exception as e:
             error_msg = f"ChromaDB directory cleanup failed: {e}"
@@ -793,7 +814,9 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
 
                 # Log database size before VACUUM for diagnostic purposes
                 db_size_mb = self.chroma_db_path.stat().st_size / (1024 * 1024)
-                log.info(f"ChromaDB size after cleanup, before VACUUM: {db_size_mb:.1f}MB (VACUUM needed to reclaim space)")
+                log.info(
+                    f"ChromaDB size after cleanup, before VACUUM: {db_size_mb:.1f}MB (VACUUM needed to reclaim space)"
+                )
 
         except Exception as e:
             log.error(f"Error cleaning orphaned ChromaDB database records: {e}")
@@ -884,7 +907,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             # Conservative approach: don't touch FTS if anything goes wrong
             try:
                 conn.execute("DROP TABLE IF EXISTS temp_valid_fts")
-            except:
+            except Exception:
                 pass
             return -1  # Signal FTS cleanup was skipped
 
@@ -916,7 +939,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """Count orphaned PGVector collections for preview."""
         if not self.session:
@@ -964,7 +987,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """
         Delete orphaned PGVector collections using the existing client's delete method.
@@ -1018,12 +1041,14 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
                 if self.session and active_file_ids:
                     log.debug("Cleaning orphaned chunks from active KB collections")
                     # First, find all distinct file_ids referenced by chunks
-                    file_id_result = self.session.execute(text("""
+                    file_id_result = self.session.execute(
+                        text("""
                         SELECT DISTINCT dc.vmetadata->>'file_id' AS file_id
                         FROM document_chunk dc
                         WHERE dc.vmetadata ? 'file_id'
                           AND dc.vmetadata->>'file_id' IS NOT NULL
-                    """))
+                    """)
+                    )
                     referenced_file_ids = {row[0] for row in file_id_result}
 
                     # Determine which referenced file_ids are orphaned (not in active set)
@@ -1033,31 +1058,39 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
                         orphaned_list = list(orphaned_file_ids)
                         batch_size = 500
                         for i in range(0, len(orphaned_list), batch_size):
-                            batch = orphaned_list[i:i + batch_size]
+                            batch = orphaned_list[i : i + batch_size]
                             result = self.session.execute(
                                 text("""
                                     DELETE FROM document_chunk dc
                                     WHERE dc.vmetadata ? 'file_id'
                                       AND dc.vmetadata->>'file_id' IN :file_ids
-                                """).bindparams(bindparam('file_ids', expanding=True)),
-                                {'file_ids': batch}
+                                """).bindparams(bindparam("file_ids", expanding=True)),
+                                {"file_ids": batch},
                             )
                             orphaned_chunks_deleted += result.rowcount
                         self.session.commit()
                     if orphaned_chunks_deleted > 0:
-                        log.info(f"Deleted {orphaned_chunks_deleted} orphaned chunks from active collections")
+                        log.info(
+                            f"Deleted {orphaned_chunks_deleted} orphaned chunks from active collections"
+                        )
                 elif self.session:
-                    log.debug("Cleaning orphaned chunks from active KB collections (no active files)")
+                    log.debug(
+                        "Cleaning orphaned chunks from active KB collections (no active files)"
+                    )
                     # If there are no active file IDs, all chunks with file_id metadata are orphaned
-                    result = self.session.execute(text("""
+                    result = self.session.execute(
+                        text("""
                         DELETE FROM document_chunk dc
                         WHERE dc.vmetadata ? 'file_id'
                           AND dc.vmetadata->>'file_id' IS NOT NULL
-                    """))
+                    """)
+                    )
                     orphaned_chunks_deleted = result.rowcount
                     self.session.commit()
                     if orphaned_chunks_deleted > 0:
-                        log.info(f"Deleted {orphaned_chunks_deleted} orphaned chunks from active collections")
+                        log.info(
+                            f"Deleted {orphaned_chunks_deleted} orphaned chunks from active collections"
+                        )
             except Exception as e:
                 log.error(f"Failed to clean orphaned chunks: {e}")
                 if self.session:
@@ -1156,14 +1189,16 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
     def __init__(self, vector_db_client):
         """Initialize Milvus cleaner with client."""
         self.vector_db_client = vector_db_client
-        self.collection_prefix = getattr(vector_db_client, 'collection_prefix', 'open_webui')
+        self.collection_prefix = getattr(
+            vector_db_client, "collection_prefix", "open_webui"
+        )
         log.debug(f"Milvus cleaner initialized with prefix: {self.collection_prefix}")
 
     def count_orphaned_collections(
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """Count orphaned Milvus collections for preview."""
         try:
@@ -1179,13 +1214,15 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
             for collection_name in all_collections:
                 if collection_name.startswith(f"{self.collection_prefix}_"):
                     # Extract the original name (remove prefix)
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
                     # Restore dashes (Milvus converts - to _)
                     original_name = original_name.replace("_", "-")
 
                     if original_name not in expected_collections:
                         count += 1
-                        log.debug(f"Found orphaned Milvus collection: {collection_name}")
+                        log.debug(
+                            f"Found orphaned Milvus collection: {collection_name}"
+                        )
 
             return count
 
@@ -1208,7 +1245,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
 
             for collection_name in all_collections:
                 if collection_name.startswith(f"{self.collection_prefix}_"):
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
                     original_name = original_name.replace("_", "-")
 
                     if original_name not in expected_collections:
@@ -1220,7 +1257,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """Actually delete orphaned Milvus collections."""
         try:
@@ -1237,7 +1274,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
             for collection_name in all_collections:
                 if collection_name.startswith(f"{self.collection_prefix}_"):
                     # Extract the original name (remove prefix)
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
                     # Restore dashes (Milvus converts - to _)
                     original_name = original_name.replace("_", "-")
 
@@ -1246,9 +1283,13 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
                             # Use utility.drop_collection instead of client method
                             utility.drop_collection(collection_name)
                             deleted_count += 1
-                            log.info(f"Deleted orphaned Milvus collection: {collection_name}")
+                            log.info(
+                                f"Deleted orphaned Milvus collection: {collection_name}"
+                            )
                         except Exception as e:
-                            error_msg = f"Failed to delete collection {collection_name}: {e}"
+                            error_msg = (
+                                f"Failed to delete collection {collection_name}: {e}"
+                            )
                             log.error(error_msg)
                             errors.append(error_msg)
 
@@ -1323,29 +1364,31 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         """Initialize Milvus multitenancy cleaner with client."""
         self.vector_db_client = vector_db_client
         self.collection_prefix = getattr(
-            vector_db_client, 'collection_prefix', 'open_webui'
+            vector_db_client, "collection_prefix", "open_webui"
         )
 
         # Get shared collection names
         self.shared_collections = getattr(
             vector_db_client,
-            'shared_collections',
+            "shared_collections",
             [
                 f"{self.collection_prefix}_memories",
                 f"{self.collection_prefix}_knowledge",
                 f"{self.collection_prefix}_files",
                 f"{self.collection_prefix}_web_search",
                 f"{self.collection_prefix}_hash_based",
-            ]
+            ],
         )
-        log.debug(f"Milvus multitenancy cleaner initialized with prefix: {self.collection_prefix}")
+        log.debug(
+            f"Milvus multitenancy cleaner initialized with prefix: {self.collection_prefix}"
+        )
         log.debug(f"Shared collections: {self.shared_collections}")
 
     def count_orphaned_collections(
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """
         Count orphaned resource_ids across all shared collections.
@@ -1376,7 +1419,7 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                     iterator = collection.query_iterator(
                         expr="",  # Empty expression to query all records
                         output_fields=["resource_id"],
-                        batch_size=1000
+                        batch_size=1000,
                     )
 
                     batch_count = 0
@@ -1392,18 +1435,26 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                         batch_count += 1
 
                         if batch_count % 10 == 0:
-                            log.debug(f"Fetched {len(all_resource_ids)} resource_ids so far from {shared_collection_name} ({batch_count} batches)")
+                            log.debug(
+                                f"Fetched {len(all_resource_ids)} resource_ids so far from {shared_collection_name} ({batch_count} batches)"
+                            )
 
-                    log.info(f"Total resource_ids in {shared_collection_name}: {len(all_resource_ids)}")
+                    log.info(
+                        f"Total resource_ids in {shared_collection_name}: {len(all_resource_ids)}"
+                    )
 
                     # Count orphaned ones
                     for resource_id in all_resource_ids:
                         if resource_id not in expected_resource_ids:
                             count += 1
-                            log.debug(f"Found orphaned resource_id in {shared_collection_name}: {resource_id}")
+                            log.debug(
+                                f"Found orphaned resource_id in {shared_collection_name}: {resource_id}"
+                            )
 
                 except Exception as e:
-                    log.error(f"Error checking shared collection {shared_collection_name}: {e}")
+                    log.error(
+                        f"Error checking shared collection {shared_collection_name}: {e}"
+                    )
 
             return count
 
@@ -1450,7 +1501,9 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                             yield (resource_id, shared_collection_name)
 
                 except Exception as e:
-                    log.debug(f"Error iterating shared collection {shared_collection_name}: {e}")
+                    log.debug(
+                        f"Error iterating shared collection {shared_collection_name}: {e}"
+                    )
 
         except Exception as e:
             log.debug(f"Error iterating orphaned Milvus MT collections: {e}")
@@ -1459,7 +1512,7 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """
         Delete orphaned resource_ids from shared collections.
@@ -1491,7 +1544,7 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                     iterator = collection.query_iterator(
                         expr="",  # Empty expression to query all records
                         output_fields=["resource_id"],
-                        batch_size=1000
+                        batch_size=1000,
                     )
 
                     batch_count = 0
@@ -1507,14 +1560,24 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                         batch_count += 1
 
                         if batch_count % 10 == 0:
-                            log.debug(f"Fetched {len(all_resource_ids)} resource_ids so far from {shared_collection_name} ({batch_count} batches)")
+                            log.debug(
+                                f"Fetched {len(all_resource_ids)} resource_ids so far from {shared_collection_name} ({batch_count} batches)"
+                            )
 
-                    log.info(f"Total resource_ids in {shared_collection_name}: {len(all_resource_ids)}")
+                    log.info(
+                        f"Total resource_ids in {shared_collection_name}: {len(all_resource_ids)}"
+                    )
 
                     # Get unique orphaned resource_ids
-                    orphaned_ids = [rid for rid in all_resource_ids if rid not in expected_resource_ids]
+                    orphaned_ids = [
+                        rid
+                        for rid in all_resource_ids
+                        if rid not in expected_resource_ids
+                    ]
 
-                    log.info(f"Found {len(orphaned_ids)} orphaned resource_ids in {shared_collection_name}")
+                    log.info(
+                        f"Found {len(orphaned_ids)} orphaned resource_ids in {shared_collection_name}"
+                    )
 
                     # Delete each orphaned resource_id
                     for resource_id in orphaned_ids:
@@ -1523,7 +1586,9 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                             expr = f"resource_id == '{resource_id}'"
                             collection.delete(expr)
                             deleted_count += 1
-                            log.info(f"Deleted orphaned resource_id from {shared_collection_name}: {resource_id}")
+                            log.info(
+                                f"Deleted orphaned resource_id from {shared_collection_name}: {resource_id}"
+                            )
                         except Exception as e:
                             error_msg = f"Failed to delete resource_id {resource_id} from {shared_collection_name}: {e}"
                             log.error(error_msg)
@@ -1540,7 +1605,9 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                     errors.append(error_msg)
 
             if deleted_count > 0:
-                log.info(f"Deleted {deleted_count} orphaned Milvus multitenancy resource_ids")
+                log.info(
+                    f"Deleted {deleted_count} orphaned Milvus multitenancy resource_ids"
+                )
 
             if errors:
                 return (deleted_count, "; ".join(errors))
@@ -1570,7 +1637,9 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                 mt_collection = f"{self.collection_prefix}_files"
             elif collection_name.startswith("web-search-"):
                 mt_collection = f"{self.collection_prefix}_web_search"
-            elif len(collection_name) == 63 and all(c in "0123456789abcdef" for c in collection_name):
+            elif len(collection_name) == 63 and all(
+                c in "0123456789abcdef" for c in collection_name
+            ):
                 mt_collection = f"{self.collection_prefix}_hash_based"
             else:
                 mt_collection = f"{self.collection_prefix}_knowledge"
@@ -1587,18 +1656,22 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
             collection.delete(expr)
             collection.flush()
 
-            log.debug(f"Deleted Milvus multitenancy collection: {collection_name} from {mt_collection}")
+            log.debug(
+                f"Deleted Milvus multitenancy collection: {collection_name} from {mt_collection}"
+            )
             return True
 
         except Exception as e:
-            log.error(f"Error deleting Milvus multitenancy collection '{collection_name}': {e}")
+            log.error(
+                f"Error deleting Milvus multitenancy collection '{collection_name}': {e}"
+            )
             return False
 
     def _build_expected_resource_ids(
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """
         Build set of resource_ids that should exist across all shared collections.
@@ -1667,7 +1740,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """Count orphaned Qdrant collections."""
         try:
@@ -1683,7 +1756,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
                 collection_name = collection.name
                 if collection_name.startswith(f"{self.collection_prefix}_"):
                     # Remove prefix to get original name
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
 
                     if original_name not in expected_collections:
                         count += 1
@@ -1710,7 +1783,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
             for collection in all_collections:
                 collection_name = collection.name
                 if collection_name.startswith(f"{self.collection_prefix}_"):
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
                     if original_name not in expected_collections:
                         yield (original_name, collection_name)
         except Exception as e:
@@ -1720,7 +1793,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """Delete orphaned Qdrant collections."""
         try:
@@ -1737,13 +1810,17 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
                 collection_name = collection.name
                 if collection_name.startswith(f"{self.collection_prefix}_"):
                     # Remove prefix to get original name
-                    original_name = collection_name[len(self.collection_prefix) + 1:]
+                    original_name = collection_name[len(self.collection_prefix) + 1 :]
 
                     if original_name not in expected_collections:
                         try:
-                            self.client.delete_collection(collection_name=collection_name)
+                            self.client.delete_collection(
+                                collection_name=collection_name
+                            )
                             deleted_count += 1
-                            log.info(f"Deleted orphaned Qdrant collection: {original_name}")
+                            log.info(
+                                f"Deleted orphaned Qdrant collection: {original_name}"
+                            )
                         except Exception as e:
                             error_msg = f"Failed to delete Qdrant collection {collection_name}: {e}"
                             log.error(error_msg)
@@ -1823,7 +1900,7 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """
         Count orphaned tenant_ids across all shared collections.
@@ -1835,8 +1912,12 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                 active_file_ids, active_kb_ids, active_user_ids or set()
             )
 
-            log.info(f"Qdrant multitenancy: {len(active_kb_ids)} active KBs, {len(active_file_ids)} active files, {len(active_user_ids or set())} active users")
-            log.info(f"Qdrant multitenancy: Built {len(expected_tenant_ids)} expected tenant_ids")
+            log.info(
+                f"Qdrant multitenancy: {len(active_kb_ids)} active KBs, {len(active_file_ids)} active files, {len(active_user_ids or set())} active users"
+            )
+            log.info(
+                f"Qdrant multitenancy: Built {len(expected_tenant_ids)} expected tenant_ids"
+            )
             log.debug(f"Expected tenant_ids sample: {list(expected_tenant_ids)[:10]}")
 
             orphaned_count = 0
@@ -1868,8 +1949,8 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
 
                         # Extract unique tenant_ids from this batch
                         for point in points:
-                            if 'tenant_id' in point.payload:
-                                all_tenant_ids.add(point.payload['tenant_id'])
+                            if "tenant_id" in point.payload:
+                                all_tenant_ids.add(point.payload["tenant_id"])
 
                         # Check if there are more results
                         if next_offset is None:
@@ -1877,7 +1958,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
 
                         offset = next_offset
 
-                    log.debug(f"Found {len(all_tenant_ids)} tenant_ids in {collection_name}")
+                    log.debug(
+                        f"Found {len(all_tenant_ids)} tenant_ids in {collection_name}"
+                    )
 
                     # Count orphaned tenant_ids
                     orphaned_in_this_collection = []
@@ -1887,10 +1970,14 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                             orphaned_in_this_collection.append(tenant_id)
 
                     if orphaned_in_this_collection:
-                        log.warning(f"Found {len(orphaned_in_this_collection)} orphaned tenant_ids in {collection_name}: {orphaned_in_this_collection}")
+                        log.warning(
+                            f"Found {len(orphaned_in_this_collection)} orphaned tenant_ids in {collection_name}: {orphaned_in_this_collection}"
+                        )
 
                 except Exception as e:
-                    log.error(f"Error scanning Qdrant collection {collection_name}: {e}")
+                    log.error(
+                        f"Error scanning Qdrant collection {collection_name}: {e}"
+                    )
 
         except Exception as e:
             log.error(f"Error counting orphaned Qdrant multitenancy tenant_ids: {e}")
@@ -1932,8 +2019,8 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                             break
 
                         for point in points:
-                            if 'tenant_id' in point.payload:
-                                all_tenant_ids.add(point.payload['tenant_id'])
+                            if "tenant_id" in point.payload:
+                                all_tenant_ids.add(point.payload["tenant_id"])
 
                         if next_offset is None:
                             break
@@ -1944,7 +2031,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                             yield (tenant_id, collection_name)
 
                 except Exception as e:
-                    log.debug(f"Error iterating Qdrant collection {collection_name}: {e}")
+                    log.debug(
+                        f"Error iterating Qdrant collection {collection_name}: {e}"
+                    )
 
         except Exception as e:
             log.debug(f"Error iterating orphaned Qdrant MT tenant_ids: {e}")
@@ -1953,7 +2042,7 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """
         Delete orphaned tenant_ids from shared collections.
@@ -1965,8 +2054,12 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                 active_file_ids, active_kb_ids, active_user_ids or set()
             )
 
-            log.info(f"Qdrant multitenancy cleanup: {len(active_kb_ids)} active KBs, {len(active_file_ids)} active files, {len(active_user_ids or set())} active users")
-            log.info(f"Qdrant multitenancy cleanup: Built {len(expected_tenant_ids)} expected tenant_ids")
+            log.info(
+                f"Qdrant multitenancy cleanup: {len(active_kb_ids)} active KBs, {len(active_file_ids)} active files, {len(active_user_ids or set())} active users"
+            )
+            log.info(
+                f"Qdrant multitenancy cleanup: Built {len(expected_tenant_ids)} expected tenant_ids"
+            )
 
             deleted_count = 0
             errors = []
@@ -1996,15 +2089,17 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
 
                         # Extract unique tenant_ids
                         for point in points:
-                            if 'tenant_id' in point.payload:
-                                all_tenant_ids.add(point.payload['tenant_id'])
+                            if "tenant_id" in point.payload:
+                                all_tenant_ids.add(point.payload["tenant_id"])
 
                         if next_offset is None:
                             break
 
                         offset = next_offset
 
-                    log.info(f"Total tenant_ids in {collection_name}: {len(all_tenant_ids)}")
+                    log.info(
+                        f"Total tenant_ids in {collection_name}: {len(all_tenant_ids)}"
+                    )
 
                     # Delete orphaned tenant_ids
                     orphaned_tenant_ids = [
@@ -2012,7 +2107,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                     ]
 
                     if orphaned_tenant_ids:
-                        log.warning(f"Found {len(orphaned_tenant_ids)} orphaned tenant_ids in {collection_name}: {orphaned_tenant_ids}")
+                        log.warning(
+                            f"Found {len(orphaned_tenant_ids)} orphaned tenant_ids in {collection_name}: {orphaned_tenant_ids}"
+                        )
                     else:
                         log.info(f"No orphaned tenant_ids found in {collection_name}")
 
@@ -2026,21 +2123,27 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                                         must=[
                                             qdrant_models.FieldCondition(
                                                 key="tenant_id",
-                                                match=qdrant_models.MatchValue(value=tenant_id)
+                                                match=qdrant_models.MatchValue(
+                                                    value=tenant_id
+                                                ),
                                             )
                                         ]
                                     )
                                 ),
                             )
                             deleted_count += 1
-                            log.debug(f"Deleted orphaned tenant_id from {collection_name}: {tenant_id}")
+                            log.debug(
+                                f"Deleted orphaned tenant_id from {collection_name}: {tenant_id}"
+                            )
                         except Exception as e:
                             error_msg = f"Failed to delete tenant_id {tenant_id} from {collection_name}: {e}"
                             log.error(error_msg)
                             errors.append(error_msg)
 
                 except Exception as e:
-                    error_msg = f"Error processing Qdrant collection {collection_name}: {e}"
+                    error_msg = (
+                        f"Error processing Qdrant collection {collection_name}: {e}"
+                    )
                     log.error(error_msg)
                     errors.append(error_msg)
 
@@ -2066,7 +2169,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                 mt_collection = f"{self.collection_prefix}_files"
             elif collection_name.startswith("web-search-"):
                 mt_collection = f"{self.collection_prefix}_web-search"
-            elif len(collection_name) == 63 and all(c in "0123456789abcdef" for c in collection_name):
+            elif len(collection_name) == 63 and all(
+                c in "0123456789abcdef" for c in collection_name
+            ):
                 mt_collection = f"{self.collection_prefix}_hash-based"
             else:
                 mt_collection = f"{self.collection_prefix}_knowledge"
@@ -2082,7 +2187,7 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
                         must=[
                             qdrant_models.FieldCondition(
                                 key="tenant_id",
-                                match=qdrant_models.MatchValue(value=tenant_id)
+                                match=qdrant_models.MatchValue(value=tenant_id),
                             )
                         ]
                     )
@@ -2095,7 +2200,10 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
             return False
 
     def _build_expected_tenant_ids(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str], active_user_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Set[str],
     ) -> Set[str]:
         """
         Build set of expected tenant_ids.
@@ -2130,7 +2238,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
             expected_tenant_ids.add(f"user-memory-{user_id}")
             memory_tenant_ids_count += 1
 
-        log.debug(f"Built expected tenant_ids: {file_tenant_ids_count} files, {kb_tenant_ids_count} KBs, {memory_tenant_ids_count} memories")
+        log.debug(
+            f"Built expected tenant_ids: {file_tenant_ids_count} files, {kb_tenant_ids_count} KBs, {memory_tenant_ids_count} memories"
+        )
         if kb_ids_sample:
             log.debug(f"Sample KB IDs added as tenant_ids: {kb_ids_sample}")
 
@@ -2152,7 +2262,7 @@ class NoOpVectorDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> int:
         """No orphaned collections to count for unsupported databases."""
         return 0
@@ -2161,7 +2271,7 @@ class NoOpVectorDatabaseCleaner(VectorDatabaseCleaner):
         self,
         active_file_ids: Set[str],
         active_kb_ids: Set[str],
-        active_user_ids: Optional[Set[str]] = None
+        active_user_ids: Optional[Set[str]] = None,
     ) -> tuple[int, Optional[str]]:
         """No collections to cleanup for unsupported databases."""
         return (0, None)
@@ -2226,4 +2336,3 @@ def get_vector_database_cleaner(
             f"No specific cleaner for vector database type: {vector_db_type}, using no-op cleaner"
         )
         return NoOpVectorDatabaseCleaner()
-

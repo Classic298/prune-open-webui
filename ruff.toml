@@ -1,0 +1,13 @@
+# Ruff configuration for the Open WebUI prune tool.
+
+[lint]
+ignore = [
+    "E711", # `== None` is required to build SQLAlchemy filter expressions
+    "E712", # `== True` / `== False` likewise in SQLAlchemy filters
+    "E402", # CLI entrypoints intentionally import after sys.path setup
+]
+
+[lint.per-file-ignores]
+# Compatibility layer: names are re-exported via __all__ and some imports are
+# import-strategy probes, both of which look "unused" to the linter.
+"prune_imports.py" = ["F401"]

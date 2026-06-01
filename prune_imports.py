@@ -27,6 +27,7 @@ def _try_pip_imports():
     """Try importing as if installed via pip (open_webui.*)"""
     try:
         from open_webui.models.users import Users
+
         return "pip"
     except ImportError:
         return None
@@ -39,6 +40,7 @@ def _try_git_imports():
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
         from backend.open_webui.models.users import Users
+
         return "git"
     except ImportError as e:
         # Check if it's a missing dependency vs missing backend structure
@@ -57,13 +59,16 @@ def _try_backend_path_imports():
         if str(BACKEND_DIR) not in sys.path:
             sys.path.insert(0, str(BACKEND_DIR))
         from open_webui.models.users import Users
+
         return "backend_path"
     except ImportError:
         return None
 
 
 # Detect import strategy
-_import_strategy = _try_pip_imports() or _try_git_imports() or _try_backend_path_imports()
+_import_strategy = (
+    _try_pip_imports() or _try_git_imports() or _try_backend_path_imports()
+)
 
 if _import_strategy is None:
     # Check if backend directory exists to give better error message
@@ -124,7 +129,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     try:
         from open_webui.config import S3_KEY_PREFIX
     except ImportError:
-        S3_KEY_PREFIX = ''
+        S3_KEY_PREFIX = ""
 
     # Core ORM models — needed for cleanup queries
     try:
@@ -174,7 +179,7 @@ elif _import_strategy == "git":
     try:
         from backend.open_webui.config import S3_KEY_PREFIX
     except ImportError:
-        S3_KEY_PREFIX = ''
+        S3_KEY_PREFIX = ""
 
     # Core ORM models — needed for cleanup queries
     try:
@@ -191,7 +196,10 @@ elif _import_strategy == "git":
         AutomationRuns = None
 
     try:
-        from backend.open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT, VECTOR_DB
+        from backend.open_webui.retrieval.vector.factory import (
+            VECTOR_DB_CLIENT,
+            VECTOR_DB,
+        )
     except ImportError:
         VECTOR_DB_CLIENT = None
         VECTOR_DB = None
@@ -219,50 +227,50 @@ def get_sync_engine():
 
 # Export all for easy importing
 __all__ = [
-    'Users',
-    'Chat',
-    'Chats',
-    'ChatFile',
-    'ChatMessage',
-    'Message',
-    'Memory',
-    'Memories',
-    'File',
-    'Files',
-    'Note',
-    'Notes',
-    'Prompt',
-    'Prompts',
-    'Model',
-    'Models',
-    'Knowledge',
-    'Knowledges',
-    'Function',
-    'Functions',
-    'Tool',
-    'Tools',
-    'Skill',
-    'Skills',
-    'Automation',
-    'AutomationRun',
-    'Automations',
-    'AutomationRuns',
-    'Folder',
-    'Folders',
-    'FolderModel',
-    'Storage',
-    'get_async_db',
-    'get_async_db_context',
-    'get_sync_engine',
-    'CACHE_DIR',
-    'UPLOAD_DIR',
-    'STORAGE_PROVIDER',
-    'S3_KEY_PREFIX',
-    'VECTOR_DB_CLIENT',
-    'VECTOR_DB',
-    'ENABLE_QDRANT_MULTITENANCY_MODE',
-    'ENABLE_MILVUS_MULTITENANCY_MODE',
-    '_import_strategy',
+    "Users",
+    "Chat",
+    "Chats",
+    "ChatFile",
+    "ChatMessage",
+    "Message",
+    "Memory",
+    "Memories",
+    "File",
+    "Files",
+    "Note",
+    "Notes",
+    "Prompt",
+    "Prompts",
+    "Model",
+    "Models",
+    "Knowledge",
+    "Knowledges",
+    "Function",
+    "Functions",
+    "Tool",
+    "Tools",
+    "Skill",
+    "Skills",
+    "Automation",
+    "AutomationRun",
+    "Automations",
+    "AutomationRuns",
+    "Folder",
+    "Folders",
+    "FolderModel",
+    "Storage",
+    "get_async_db",
+    "get_async_db_context",
+    "get_sync_engine",
+    "CACHE_DIR",
+    "UPLOAD_DIR",
+    "STORAGE_PROVIDER",
+    "S3_KEY_PREFIX",
+    "VECTOR_DB_CLIENT",
+    "VECTOR_DB",
+    "ENABLE_QDRANT_MULTITENANCY_MODE",
+    "ENABLE_MILVUS_MULTITENANCY_MODE",
+    "_import_strategy",
 ]
 
 
@@ -271,7 +279,7 @@ if __name__ == "__main__":
     print(f"✓ Import strategy: {_import_strategy}")
     print(f"✓ REPO_ROOT: {REPO_ROOT}")
     print(f"✓ BACKEND_DIR: {BACKEND_DIR}")
-    print(f"✓ Successfully imported Open WebUI modules")
+    print("✓ Successfully imported Open WebUI modules")
     print(f"  - Users: {Users}")
     print(f"  - CACHE_DIR: {CACHE_DIR}")
     print(f"  - VECTOR_DB: {VECTOR_DB}")

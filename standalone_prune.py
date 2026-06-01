@@ -19,7 +19,6 @@ Requirements:
 
 import asyncio
 import sys
-import os
 import argparse
 import logging
 from pathlib import Path
@@ -36,7 +35,7 @@ try:
         PruneLock,
         get_vector_database_cleaner,
         ChromaDatabaseCleaner,
-        PGVectorDatabaseCleaner
+        PGVectorDatabaseCleaner,
     )
     from prune_operations import (
         count_inactive_users,
@@ -60,11 +59,25 @@ try:
         stream_rows,
     )
     from prune_imports import (
-        Users, Chat, Chats, File, Notes, Prompts, Models, Knowledges, Functions,
-        Tools, Skills, Folders, get_async_db, CACHE_DIR,
-        ENABLE_QDRANT_MULTITENANCY_MODE, ENABLE_MILVUS_MULTITENANCY_MODE,
+        Users,
+        Chat,
+        Chats,
+        File,
+        Notes,
+        Prompts,
+        Models,
+        Knowledges,
+        Functions,
+        Tools,
+        Skills,
+        Folders,
+        get_async_db,
+        CACHE_DIR,
+        ENABLE_QDRANT_MULTITENANCY_MODE,
+        ENABLE_MILVUS_MULTITENANCY_MODE,
         get_sync_engine,
     )
+
     try:
         from prune_imports import VECTOR_DB, VECTOR_DB_CLIENT
     except ImportError:
@@ -75,7 +88,10 @@ try:
     import sqlite3
 except ImportError as e:
     print(f"ERROR: Failed to import Open WebUI modules: {e}", file=sys.stderr)
-    print("\nThis script must be run with access to Open WebUI's backend modules.", file=sys.stderr)
+    print(
+        "\nThis script must be run with access to Open WebUI's backend modules.",
+        file=sys.stderr,
+    )
     print("Try one of the following:", file=sys.stderr)
     print("  1. Run from the Open WebUI installation directory", file=sys.stderr)
     print("  2. Set PYTHONPATH to include the Open WebUI directory", file=sys.stderr)
@@ -85,10 +101,8 @@ except ImportError as e:
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger(__name__)
 
@@ -96,7 +110,7 @@ log = logging.getLogger(__name__)
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Open WebUI Standalone Data Pruning Script',
+        description="Open WebUI Standalone Data Pruning Script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -124,292 +138,292 @@ Safety Features:
   - Detailed logging of all operations
   - Supports exemptions for archived, pinned, and folder-organized chats
   - Admin users exempted from deletion by default
-        """
+        """,
     )
 
     # Execution mode
     parser.add_argument(
-        '--dry-run',
-        action='store_true',
+        "--dry-run",
+        action="store_true",
         default=False,
-        help='Preview what will be deleted without making changes (default if --execute not specified)'
+        help="Preview what will be deleted without making changes (default if --execute not specified)",
     )
     parser.add_argument(
-        '--execute',
-        action='store_true',
+        "--execute",
+        action="store_true",
         default=False,
-        help='Actually perform deletions (required for real cleanup)'
+        help="Actually perform deletions (required for real cleanup)",
     )
 
     # Age-based deletion
     parser.add_argument(
-        '--days',
+        "--days",
         type=int,
         default=None,
-        metavar='N',
-        help='Delete chats older than N days (based on last update time)'
+        metavar="N",
+        help="Delete chats older than N days (based on last update time)",
     )
     parser.add_argument(
-        '--exempt-archived-chats',
-        action='store_true',
+        "--exempt-archived-chats",
+        action="store_true",
         default=True,
-        help='Keep archived chats even if old (default: True)'
+        help="Keep archived chats even if old (default: True)",
     )
     parser.add_argument(
-        '--no-exempt-archived-chats',
-        action='store_false',
-        dest='exempt_archived_chats',
-        help='Include archived chats in age-based deletion'
+        "--no-exempt-archived-chats",
+        action="store_false",
+        dest="exempt_archived_chats",
+        help="Include archived chats in age-based deletion",
     )
     parser.add_argument(
-        '--exempt-pinned-chats',
-        action='store_true',
+        "--exempt-pinned-chats",
+        action="store_true",
         default=False,
-        help='Keep pinned chats even if old'
+        help="Keep pinned chats even if old",
     )
     parser.add_argument(
-        '--exempt-chats-in-folders',
-        action='store_true',
+        "--exempt-chats-in-folders",
+        action="store_true",
         default=False,
-        help='Keep chats in folders even if old'
+        help="Keep chats in folders even if old",
     )
 
     # Knowledge base retention (DANGEROUS: deletes live, owned, in-use KBs by age)
     parser.add_argument(
-        '--delete-knowledge-bases-older-than-days',
+        "--delete-knowledge-bases-older-than-days",
         type=int,
         default=None,
-        metavar='N',
+        metavar="N",
         help=(
-            'Delete knowledge bases older than N days, even if the owner exists '
-            'and the KB is in use (DESTRUCTIVE retention policy, not orphan cleanup)'
-        )
+            "Delete knowledge bases older than N days, even if the owner exists "
+            "and the KB is in use (DESTRUCTIVE retention policy, not orphan cleanup)"
+        ),
     )
     parser.add_argument(
-        '--knowledge-bases-age-field',
-        choices=['created_at', 'updated_at'],
-        default='created_at',
+        "--knowledge-bases-age-field",
+        choices=["created_at", "updated_at"],
+        default="created_at",
         help=(
-            'Timestamp used for --delete-knowledge-bases-older-than-days '
-            '(default: created_at)'
-        )
+            "Timestamp used for --delete-knowledge-bases-older-than-days "
+            "(default: created_at)"
+        ),
     )
 
     # Inactive user deletion
     parser.add_argument(
-        '--delete-inactive-users-days',
+        "--delete-inactive-users-days",
         type=int,
         default=None,
-        metavar='N',
-        help='Delete users inactive for more than N days (DESTRUCTIVE)'
+        metavar="N",
+        help="Delete users inactive for more than N days (DESTRUCTIVE)",
     )
     parser.add_argument(
-        '--exempt-admin-users',
-        action='store_true',
+        "--exempt-admin-users",
+        action="store_true",
         default=True,
-        help='Never delete admin users (default: True, STRONGLY RECOMMENDED)'
+        help="Never delete admin users (default: True, STRONGLY RECOMMENDED)",
     )
     parser.add_argument(
-        '--no-exempt-admin-users',
-        action='store_false',
-        dest='exempt_admin_users',
-        help='Include admin users in inactivity deletion (NOT RECOMMENDED)'
+        "--no-exempt-admin-users",
+        action="store_false",
+        dest="exempt_admin_users",
+        help="Include admin users in inactivity deletion (NOT RECOMMENDED)",
     )
     parser.add_argument(
-        '--exempt-pending-users',
-        action='store_true',
+        "--exempt-pending-users",
+        action="store_true",
         default=True,
-        help='Never delete pending users (default: True)'
+        help="Never delete pending users (default: True)",
     )
     parser.add_argument(
-        '--no-exempt-pending-users',
-        action='store_false',
-        dest='exempt_pending_users',
-        help='Include pending users in inactivity deletion'
+        "--no-exempt-pending-users",
+        action="store_false",
+        dest="exempt_pending_users",
+        help="Include pending users in inactivity deletion",
     )
 
     # Orphaned data deletion
     parser.add_argument(
-        '--delete-orphaned-chats',
-        action='store_true',
+        "--delete-orphaned-chats",
+        action="store_true",
         default=True,
-        help='Delete orphaned chats from deleted users (default: True)'
+        help="Delete orphaned chats from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-chats',
-        action='store_false',
-        dest='delete_orphaned_chats',
-        help='Skip orphaned chat deletion'
+        "--no-delete-orphaned-chats",
+        action="store_false",
+        dest="delete_orphaned_chats",
+        help="Skip orphaned chat deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-tools',
-        action='store_true',
+        "--delete-orphaned-tools",
+        action="store_true",
         default=False,
-        help='Delete orphaned tools from deleted users'
+        help="Delete orphaned tools from deleted users",
     )
     parser.add_argument(
-        '--delete-orphaned-functions',
-        action='store_true',
+        "--delete-orphaned-functions",
+        action="store_true",
         default=False,
-        help='Delete orphaned functions from deleted users'
+        help="Delete orphaned functions from deleted users",
     )
     parser.add_argument(
-        '--delete-orphaned-skills',
-        action='store_true',
+        "--delete-orphaned-skills",
+        action="store_true",
         default=False,
-        help='Delete orphaned skills from deleted users'
+        help="Delete orphaned skills from deleted users",
     )
     parser.add_argument(
-        '--delete-orphaned-prompts',
-        action='store_true',
+        "--delete-orphaned-prompts",
+        action="store_true",
         default=True,
-        help='Delete orphaned prompts from deleted users (default: True)'
+        help="Delete orphaned prompts from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-prompts',
-        action='store_false',
-        dest='delete_orphaned_prompts',
-        help='Skip orphaned prompt deletion'
+        "--no-delete-orphaned-prompts",
+        action="store_false",
+        dest="delete_orphaned_prompts",
+        help="Skip orphaned prompt deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-knowledge-bases',
-        action='store_true',
+        "--delete-orphaned-knowledge-bases",
+        action="store_true",
         default=True,
-        help='Delete orphaned knowledge bases from deleted users (default: True)'
+        help="Delete orphaned knowledge bases from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-knowledge-bases',
-        action='store_false',
-        dest='delete_orphaned_knowledge_bases',
-        help='Skip orphaned knowledge base deletion'
+        "--no-delete-orphaned-knowledge-bases",
+        action="store_false",
+        dest="delete_orphaned_knowledge_bases",
+        help="Skip orphaned knowledge base deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-kb-metadata',
-        action='store_true',
+        "--delete-orphaned-kb-metadata",
+        action="store_true",
         default=True,
-        help='Delete KB search-metadata embeddings whose knowledge base no longer exists (default: True)'
+        help="Delete KB search-metadata embeddings whose knowledge base no longer exists (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-kb-metadata',
-        action='store_false',
-        dest='delete_orphaned_kb_metadata',
-        help='Skip orphaned KB metadata embedding cleanup'
+        "--no-delete-orphaned-kb-metadata",
+        action="store_false",
+        dest="delete_orphaned_kb_metadata",
+        help="Skip orphaned KB metadata embedding cleanup",
     )
     parser.add_argument(
-        '--delete-orphaned-memory-points',
-        action='store_true',
+        "--delete-orphaned-memory-points",
+        action="store_true",
         default=True,
-        help='Delete memory vector points whose memory was deleted by an active user (default: True)'
+        help="Delete memory vector points whose memory was deleted by an active user (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-memory-points',
-        action='store_false',
-        dest='delete_orphaned_memory_points',
-        help='Skip orphaned memory point cleanup'
+        "--no-delete-orphaned-memory-points",
+        action="store_false",
+        dest="delete_orphaned_memory_points",
+        help="Skip orphaned memory point cleanup",
     )
     parser.add_argument(
-        '--delete-orphaned-models',
-        action='store_true',
+        "--delete-orphaned-models",
+        action="store_true",
         default=True,
-        help='Delete orphaned models from deleted users (default: True)'
+        help="Delete orphaned models from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-models',
-        action='store_false',
-        dest='delete_orphaned_models',
-        help='Skip orphaned model deletion'
+        "--no-delete-orphaned-models",
+        action="store_false",
+        dest="delete_orphaned_models",
+        help="Skip orphaned model deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-notes',
-        action='store_true',
+        "--delete-orphaned-notes",
+        action="store_true",
         default=True,
-        help='Delete orphaned notes from deleted users (default: True)'
+        help="Delete orphaned notes from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-notes',
-        action='store_false',
-        dest='delete_orphaned_notes',
-        help='Skip orphaned note deletion'
+        "--no-delete-orphaned-notes",
+        action="store_false",
+        dest="delete_orphaned_notes",
+        help="Skip orphaned note deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-folders',
-        action='store_true',
+        "--delete-orphaned-folders",
+        action="store_true",
         default=True,
-        help='Delete orphaned folders from deleted users (default: True)'
+        help="Delete orphaned folders from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-folders',
-        action='store_false',
-        dest='delete_orphaned_folders',
-        help='Skip orphaned folder deletion'
+        "--no-delete-orphaned-folders",
+        action="store_false",
+        dest="delete_orphaned_folders",
+        help="Skip orphaned folder deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-chat-messages',
-        action='store_true',
+        "--delete-orphaned-chat-messages",
+        action="store_true",
         default=True,
-        help='Delete orphaned chat_message rows from deleted chats (default: True)'
+        help="Delete orphaned chat_message rows from deleted chats (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-chat-messages',
-        action='store_false',
-        dest='delete_orphaned_chat_messages',
-        help='Skip orphaned chat_message deletion'
+        "--no-delete-orphaned-chat-messages",
+        action="store_false",
+        dest="delete_orphaned_chat_messages",
+        help="Skip orphaned chat_message deletion",
     )
     parser.add_argument(
-        '--delete-orphaned-automations',
-        action='store_true',
+        "--delete-orphaned-automations",
+        action="store_true",
         default=True,
-        help='Delete orphaned automations and their run history from deleted users (default: True)'
+        help="Delete orphaned automations and their run history from deleted users (default: True)",
     )
     parser.add_argument(
-        '--no-delete-orphaned-automations',
-        action='store_false',
-        dest='delete_orphaned_automations',
-        help='Skip orphaned automation deletion'
+        "--no-delete-orphaned-automations",
+        action="store_false",
+        dest="delete_orphaned_automations",
+        help="Skip orphaned automation deletion",
     )
 
     # Audio cache cleanup
     parser.add_argument(
-        '--audio-cache-max-age-days',
+        "--audio-cache-max-age-days",
         type=int,
         default=None,
-        metavar='N',
-        help='Delete audio cache files (TTS/STT) older than N days'
+        metavar="N",
+        help="Delete audio cache files (TTS/STT) older than N days",
     )
 
     # Database optimization
     parser.add_argument(
-        '--run-vacuum',
-        action='store_true',
+        "--run-vacuum",
+        action="store_true",
         default=False,
         help=(
-            'Run VACUUM on main and vector databases to reclaim disk space (LOCKS DATABASE, use during maintenance)'
-        )
+            "Run VACUUM on main and vector databases to reclaim disk space (LOCKS DATABASE, use during maintenance)"
+        ),
     )
 
     # Logging
     parser.add_argument(
-        '--verbose',
-        '-v',
-        action='store_true',
+        "--verbose",
+        "-v",
+        action="store_true",
         default=False,
-        help='Enable verbose debug logging'
+        help="Enable verbose debug logging",
     )
     parser.add_argument(
-        '--quiet',
-        '-q',
-        action='store_true',
+        "--quiet",
+        "-q",
+        action="store_true",
         default=False,
-        help='Suppress all output except errors'
+        help="Suppress all output except errors",
     )
 
     # Export
     parser.add_argument(
-        '--export-preview',
+        "--export-preview",
         type=str,
         default=None,
-        metavar='PATH',
-        help='Export detailed preview to CSV file (requires --dry-run)'
+        metavar="PATH",
+        help="Export detailed preview to CSV file (requires --dry-run)",
     )
 
     args = parser.parse_args()
@@ -473,43 +487,56 @@ def create_prune_form(args) -> PruneDataForm:
 
 def print_preview_results(result: PrunePreviewResult):
     """Pretty-print preview results."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("  PRUNE PREVIEW - What will be deleted")
-    print("="*70)
+    print("=" * 70)
 
     total_items = 0
 
     if result.inactive_users > 0:
-        print(f"\n👤 Inactive Users:")
+        print("\n👤 Inactive Users:")
         print(f"   {result.inactive_users} user accounts")
         total_items += result.inactive_users
 
-    if result.old_chats > 0 or result.orphaned_chats > 0 or result.orphaned_chat_messages > 0:
-        print(f"\n💬 Chats:")
+    if (
+        result.old_chats > 0
+        or result.orphaned_chats > 0
+        or result.orphaned_chat_messages > 0
+    ):
+        print("\n💬 Chats:")
         if result.old_chats > 0:
             print(f"   {result.old_chats} old chats (age-based)")
         if result.orphaned_chats > 0:
             print(f"   {result.orphaned_chats} orphaned chats")
         if result.orphaned_chat_messages > 0:
             print(f"   {result.orphaned_chat_messages} orphaned chat messages")
-        total_items += result.old_chats + result.orphaned_chats + result.orphaned_chat_messages
+        total_items += (
+            result.old_chats + result.orphaned_chats + result.orphaned_chat_messages
+        )
 
     if result.old_knowledge_bases > 0:
-        print(f"\n📚 Knowledge Bases (retention policy):")
-        print(f"   {result.old_knowledge_bases} knowledge bases (age-based, deletes live/in-use KBs)")
+        print("\n📚 Knowledge Bases (retention policy):")
+        print(
+            f"   {result.old_knowledge_bases} knowledge bases (age-based, deletes live/in-use KBs)"
+        )
         total_items += result.old_knowledge_bases
 
     if result.orphaned_files > 0:
-        print(f"\n📁 Files:")
+        print("\n📁 Files:")
         print(f"   {result.orphaned_files} orphaned file records")
         total_items += result.orphaned_files
 
-    workspace_total = (result.orphaned_tools + result.orphaned_functions +
-                       result.orphaned_prompts + result.orphaned_knowledge_bases +
-                       result.orphaned_models + result.orphaned_notes +
-                       result.orphaned_skills)
+    workspace_total = (
+        result.orphaned_tools
+        + result.orphaned_functions
+        + result.orphaned_prompts
+        + result.orphaned_knowledge_bases
+        + result.orphaned_models
+        + result.orphaned_notes
+        + result.orphaned_skills
+    )
     if workspace_total > 0:
-        print(f"\n🔧 Workspace Items:")
+        print("\n🔧 Workspace Items:")
         if result.orphaned_tools > 0:
             print(f"   {result.orphaned_tools} orphaned tools")
         if result.orphaned_functions > 0:
@@ -527,39 +554,51 @@ def print_preview_results(result: PrunePreviewResult):
         total_items += workspace_total
 
     if result.orphaned_folders > 0:
-        print(f"\n📂 Folders:")
+        print("\n📂 Folders:")
         print(f"   {result.orphaned_folders} orphaned folders")
         total_items += result.orphaned_folders
 
     automation_total = result.orphaned_automations + result.orphaned_automation_runs
     if automation_total > 0:
-        print(f"\n⚙️  Automations:")
+        print("\n⚙️  Automations:")
         if result.orphaned_automations > 0:
             print(f"   {result.orphaned_automations} orphaned automations")
         if result.orphaned_automation_runs > 0:
             print(f"   {result.orphaned_automation_runs} orphaned automation runs")
         total_items += automation_total
 
-    if result.orphaned_uploads > 0 or result.orphaned_vector_collections > 0 or result.orphaned_kb_metadata > 0 or result.orphaned_memory_points > 0:
-        print(f"\n💾 Storage:")
+    if (
+        result.orphaned_uploads > 0
+        or result.orphaned_vector_collections > 0
+        or result.orphaned_kb_metadata > 0
+        or result.orphaned_memory_points > 0
+    ):
+        print("\n💾 Storage:")
         if result.orphaned_uploads > 0:
             print(f"   {result.orphaned_uploads} orphaned upload files")
         if result.orphaned_vector_collections > 0:
-            print(f"   {result.orphaned_vector_collections} orphaned vector collections")
+            print(
+                f"   {result.orphaned_vector_collections} orphaned vector collections"
+            )
         if result.orphaned_kb_metadata > 0:
             print(f"   {result.orphaned_kb_metadata} orphaned KB metadata embeddings")
         if result.orphaned_memory_points > 0:
             print(f"   {result.orphaned_memory_points} orphaned memory points")
-        total_items += result.orphaned_uploads + result.orphaned_vector_collections + result.orphaned_kb_metadata + result.orphaned_memory_points
+        total_items += (
+            result.orphaned_uploads
+            + result.orphaned_vector_collections
+            + result.orphaned_kb_metadata
+            + result.orphaned_memory_points
+        )
 
     if result.audio_cache_files > 0:
-        print(f"\n🔊 Audio Cache:")
+        print("\n🔊 Audio Cache:")
         print(f"   {result.audio_cache_files} old audio cache files")
         total_items += result.audio_cache_files
 
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print(f"  TOTAL ITEMS TO DELETE: {total_items}")
-    print("="*70)
+    print("=" * 70)
 
     if total_items == 0:
         print("\n✅ Nothing to delete - your database is clean!")
@@ -576,13 +615,17 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
     """
     # Acquire lock to prevent concurrent operations
     if not PruneLock.acquire():
-        log.error("A prune operation is already in progress. Please wait for it to complete.")
+        log.error(
+            "A prune operation is already in progress. Please wait for it to complete."
+        )
         return False
 
     try:
         # Get vector database cleaner based on configuration
         vector_cleaner = get_vector_database_cleaner(
-            VECTOR_DB, VECTOR_DB_CLIENT, Path(CACHE_DIR),
+            VECTOR_DB,
+            VECTOR_DB_CLIENT,
+            Path(CACHE_DIR),
             enable_milvus_multitenancy=ENABLE_MILVUS_MULTITENANCY_MODE,
             enable_qdrant_multitenancy=ENABLE_QDRANT_MULTITENANCY_MODE,
         )
@@ -595,13 +638,13 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             all_users = (await Users.get_users())["users"]
             active_user_ids = {str(user.id) for user in all_users}
             active_kb_ids = {
-                kb_id
-                for kb_id, uid in kb_map.items()
-                if uid in active_user_ids
+                kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
             }
             active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
 
-            orphaned_counts = await count_orphaned_records(form_data, active_file_ids, active_user_ids)
+            orphaned_counts = await count_orphaned_records(
+                form_data, active_file_ids, active_user_ids
+            )
 
             result = PrunePreviewResult(
                 inactive_users=await count_inactive_users(
@@ -636,13 +679,15 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 ),
                 orphaned_kb_metadata=(
                     vector_cleaner.count_orphaned_kb_metadata(active_kb_ids)
-                    if form_data.delete_orphaned_kb_metadata else 0
+                    if form_data.delete_orphaned_kb_metadata
+                    else 0
                 ),
                 orphaned_memory_points=(
                     vector_cleaner.count_orphaned_memory_points(
                         await get_memory_ids_by_user(active_user_ids)
                     )
-                    if form_data.delete_orphaned_memory_points else 0
+                    if form_data.delete_orphaned_memory_points
+                    else 0
                 ),
                 audio_cache_files=count_audio_cache_files(
                     form_data.audio_cache_max_age_days
@@ -707,18 +752,22 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 conditions = Chat.updated_at < cutoff_time
                 if form_data.exempt_archived_chats:
                     conditions &= or_(Chat.archived == False, Chat.archived == None)
-                if form_data.exempt_pinned_chats and hasattr(Chat, 'pinned'):
+                if form_data.exempt_pinned_chats and hasattr(Chat, "pinned"):
                     conditions &= or_(Chat.pinned == False, Chat.pinned == None)
                 if form_data.exempt_chats_in_folders:
-                    if hasattr(Chat, 'folder_id'):
+                    if hasattr(Chat, "folder_id"):
                         conditions &= Chat.folder_id == None
 
                 deleted = 0
-                async for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
+                async for (chat_id,) in stream_rows(
+                    db, Chat.id, filter_clause=conditions
+                ):
                     await Chats.delete_chat_by_id(chat_id, db=db)
                     deleted += 1
                 if deleted > 0:
-                    log.info(f"Deleting {deleted} old chats (older than {form_data.days} days)")
+                    log.info(
+                        f"Deleting {deleted} old chats (older than {form_data.days} days)"
+                    )
                 else:
                     log.info(f"No chats found older than {form_data.days} days")
         else:
@@ -755,7 +804,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         log.info(f"Found {len(active_user_ids)} active users")
 
         kb_map = await get_kb_user_map()
-        active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+        active_kb_ids = {
+            kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
+        }
         log.info(f"Found {len(active_kb_ids)} active knowledge bases")
 
         active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
@@ -936,7 +987,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         log.info("Recomputing preservation sets after deletions")
         active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
         kb_map = await get_kb_user_map()
-        active_kb_ids = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+        active_kb_ids = {
+            kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
+        }
         active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
 
         log.info("Cleaning up orphaned physical files")
@@ -947,13 +1000,17 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         # Audio cache cleanup
         if form_data.audio_cache_max_age_days is not None:
-            log.info(f"Cleaning audio cache files older than {form_data.audio_cache_max_age_days} days")
+            log.info(
+                f"Cleaning audio cache files older than {form_data.audio_cache_max_age_days} days"
+            )
             cleanup_audio_cache(form_data.audio_cache_max_age_days)
 
         # Use modular vector database cleanup
         warnings = []
-        deleted_vector_count, vector_error = vector_cleaner.cleanup_orphaned_collections(
-            active_file_ids, active_kb_ids, active_user_ids
+        deleted_vector_count, vector_error = (
+            vector_cleaner.cleanup_orphaned_collections(
+                active_file_ids, active_kb_ids, active_user_ids
+            )
         )
         if vector_error:
             warnings.append(f"Vector cleanup warning: {vector_error}")
@@ -972,7 +1029,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # left their vector point behind).
         if form_data.delete_orphaned_memory_points:
             memory_ids_by_user = await get_memory_ids_by_user(active_user_ids)
-            deleted_mem = vector_cleaner.cleanup_orphaned_memory_points(memory_ids_by_user)
+            deleted_mem = vector_cleaner.cleanup_orphaned_memory_points(
+                memory_ids_by_user
+            )
             if deleted_mem > 0:
                 log.info(f"Deleted {deleted_mem} orphaned memory points")
         else:
@@ -986,7 +1045,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # autocommit mode.  The sync engine is retained by Open WebUI
         # specifically for startup and maintenance tasks.
         if form_data.run_vacuum:
-            log.info("Optimizing database with VACUUM (this may take a while and lock the database)")
+            log.info(
+                "Optimizing database with VACUUM (this may take a while and lock the database)"
+            )
 
             try:
                 # Resolve the sync engine lazily — only needed for VACUUM,
@@ -996,7 +1057,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 with engine.connect().execution_options(
                     isolation_level="AUTOCOMMIT"
                 ) as conn:
-                    if 'postgresql' in str(engine.url):
+                    if "postgresql" in str(engine.url):
                         conn.execute(text("VACUUM ANALYZE"))
                         log.info("Vacuumed PostgreSQL main database")
                     else:
@@ -1023,7 +1084,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                         isolation_level="AUTOCOMMIT"
                     ) as pg_conn:
                         pg_conn.execute(text("VACUUM ANALYZE"))
-                        log.info("Executed VACUUM ANALYZE on PostgreSQL vector database")
+                        log.info(
+                            "Executed VACUUM ANALYZE on PostgreSQL vector database"
+                        )
                 except Exception as e:
                     log.error(f"Failed to vacuum PostgreSQL vector database: {e}")
         else:
@@ -1049,9 +1112,9 @@ async def async_main():
     args = parse_arguments()
     configure_logging(args.verbose, args.quiet)
 
-    log.info("="*70)
+    log.info("=" * 70)
     log.info("  Open WebUI Standalone Prune Script")
-    log.info("="*70)
+    log.info("=" * 70)
 
     # Verify environment
     log.info("Checking environment configuration...")
@@ -1059,7 +1122,9 @@ async def async_main():
     # Check if we can access database
     try:
         users = await Users.get_users()
-        log.info(f"✓ Database connection successful ({len(users['users'])} users found)")
+        log.info(
+            f"✓ Database connection successful ({len(users['users'])} users found)"
+        )
     except Exception as e:
         log.error(f"✗ Failed to connect to database: {e}")
         log.error("  Make sure DATABASE_URL environment variable is set correctly")
@@ -1092,7 +1157,9 @@ async def async_main():
         )
 
     if form_data.delete_inactive_users_days is not None:
-        log.info(f"  Delete inactive users: {form_data.delete_inactive_users_days} days")
+        log.info(
+            f"  Delete inactive users: {form_data.delete_inactive_users_days} days"
+        )
         log.info(f"    Exempt admin users: {form_data.exempt_admin_users}")
         log.info(f"    Exempt pending users: {form_data.exempt_pending_users}")
 

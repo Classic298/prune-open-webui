@@ -18,6 +18,7 @@ class PruneDataForm(BaseModel):
     operation, including age-based deletion, orphaned data cleanup, and
     system optimization settings.
     """
+
     days: Optional[int] = None
     exempt_archived_chats: bool = False
     exempt_pinned_chats: bool = False
@@ -38,7 +39,9 @@ class PruneDataForm(BaseModel):
     delete_orphaned_folders: bool = True
     delete_orphaned_chat_messages: bool = True
     delete_orphaned_automations: bool = True
-    audio_cache_max_age_days: Optional[int] = None  # Changed from 30 to None - must be explicitly enabled
+    audio_cache_max_age_days: Optional[int] = (
+        None  # Changed from 30 to None - must be explicitly enabled
+    )
     delete_inactive_users_days: Optional[int] = None
     exempt_admin_users: bool = True
     exempt_pending_users: bool = True
@@ -53,6 +56,7 @@ class PrunePreviewResult(BaseModel):
     This model is returned during dry-run operations to show the user
     exactly what will be deleted without making any changes.
     """
+
     inactive_users: int = 0
     old_chats: int = 0
     old_knowledge_bases: int = 0
@@ -78,27 +82,27 @@ class PrunePreviewResult(BaseModel):
     def total_items(self) -> int:
         """Calculate total items that would be deleted."""
         return (
-            self.inactive_users +
-            self.old_chats +
-            self.old_knowledge_bases +
-            self.orphaned_chats +
-            self.orphaned_files +
-            self.orphaned_tools +
-            self.orphaned_functions +
-            self.orphaned_prompts +
-            self.orphaned_knowledge_bases +
-            self.orphaned_models +
-            self.orphaned_notes +
-            self.orphaned_skills +
-            self.orphaned_folders +
-            self.orphaned_uploads +
-            self.orphaned_vector_collections +
-            self.orphaned_kb_metadata +
-            self.orphaned_memory_points +
-            self.orphaned_chat_messages +
-            self.orphaned_automations +
-            self.orphaned_automation_runs +
-            self.audio_cache_files
+            self.inactive_users
+            + self.old_chats
+            + self.old_knowledge_bases
+            + self.orphaned_chats
+            + self.orphaned_files
+            + self.orphaned_tools
+            + self.orphaned_functions
+            + self.orphaned_prompts
+            + self.orphaned_knowledge_bases
+            + self.orphaned_models
+            + self.orphaned_notes
+            + self.orphaned_skills
+            + self.orphaned_folders
+            + self.orphaned_uploads
+            + self.orphaned_vector_collections
+            + self.orphaned_kb_metadata
+            + self.orphaned_memory_points
+            + self.orphaned_chat_messages
+            + self.orphaned_automations
+            + self.orphaned_automation_runs
+            + self.audio_cache_files
         )
 
     def has_items(self) -> bool:
