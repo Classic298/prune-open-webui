@@ -290,8 +290,12 @@ class InteractivePruneUI:
                 "Keep archived chats even if old?",
                 default=True
             )
+            self.form_data.exempt_pinned_chats = Confirm.ask(
+                "Keep pinned chats even if old?",
+                default=False
+            )
             self.form_data.exempt_chats_in_folders = Confirm.ask(
-                "Keep chats in folders/pinned even if old?",
+                "Keep chats in folders even if old?",
                 default=False
             )
 
@@ -417,6 +421,7 @@ class InteractivePruneUI:
         if self.form_data.days is not None:
             console.print(f"  [yellow]Enabled[/yellow] - Delete chats older than {self.form_data.days} days")
             console.print(f"    Exempt archived: {'Yes' if self.form_data.exempt_archived_chats else 'No'}")
+            console.print(f"    Exempt pinned: {'Yes' if self.form_data.exempt_pinned_chats else 'No'}")
             console.print(f"    Exempt in folders: {'Yes' if self.form_data.exempt_chats_in_folders else 'No'}")
         else:
             console.print("  [dim]Disabled[/dim]")
@@ -501,6 +506,7 @@ class InteractivePruneUI:
                         self.form_data.days,
                         self.form_data.exempt_archived_chats,
                         self.form_data.exempt_chats_in_folders,
+                        self.form_data.exempt_pinned_chats,
                     ),
                     orphaned_chats=orphaned_counts["chats"],
                     orphaned_files=orphaned_counts["files"],
@@ -706,11 +712,11 @@ class InteractivePruneUI:
                     conditions = Chat.updated_at < cutoff_time
                     if self.form_data.exempt_archived_chats:
                         conditions &= or_(Chat.archived == False, Chat.archived == None)
+                    if self.form_data.exempt_pinned_chats and hasattr(Chat, 'pinned'):
+                        conditions &= or_(Chat.pinned == False, Chat.pinned == None)
                     if self.form_data.exempt_chats_in_folders:
                         if hasattr(Chat, 'folder_id'):
                             conditions &= Chat.folder_id == None
-                        if hasattr(Chat, 'pinned'):
-                            conditions &= or_(Chat.pinned == False, Chat.pinned == None)
 
                     async for (chat_id,) in stream_rows(db, Chat.id, filter_clause=conditions):
                         await Chats.delete_chat_by_id(chat_id, db=db)

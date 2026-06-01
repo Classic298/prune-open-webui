@@ -183,12 +183,13 @@ class PreviewExporter:
                 if self.form_data.exempt_archived_chats:
                     conditions.append(or_(Chat.archived == False, Chat.archived == None))
 
+                if self.form_data.exempt_pinned_chats and hasattr(Chat, 'pinned'):
+                    conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
+
                 if self.form_data.exempt_chats_in_folders:
                     folder_conditions = []
                     if hasattr(Chat, 'folder_id'):
                         folder_conditions.append(Chat.folder_id == None)
-                    if hasattr(Chat, 'pinned'):
-                        folder_conditions.append(or_(Chat.pinned == False, Chat.pinned == None))
                     if folder_conditions:
                         conditions.append(and_(*folder_conditions))
 
