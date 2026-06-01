@@ -42,11 +42,14 @@ try:
     from prune_operations import (
         count_inactive_users,
         count_old_chats,
+        count_old_knowledge_bases,
+        delete_old_knowledge_bases,
         count_orphaned_records,
         count_orphaned_uploads,
         count_audio_cache_files,
         get_active_file_ids,
         get_kb_user_map,
+        get_memory_ids_by_user,
         get_all_folders,
         safe_delete_file_by_id,
         cleanup_orphaned_uploads,
@@ -207,31 +210,34 @@ class InteractivePruneUI:
             console.print("\n[bold]Configuration Categories:[/bold]")
             console.print("[1] User Account Deletion")
             console.print("[2] Chat Deletion Settings")
-            console.print("[3] Orphaned Data Cleanup")
-            console.print("[4] Audio Cache Cleanup")
-            console.print("[5] System Optimization (VACUUM)")
-            console.print("[6] View Current Settings")
-            console.print("[7] Reset to Defaults")
-            console.print("[8] Back to Main Menu")
+            console.print("[3] Knowledge Base Retention [red](DANGEROUS)[/red]")
+            console.print("[4] Orphaned Data Cleanup")
+            console.print("[5] Audio Cache Cleanup")
+            console.print("[6] System Optimization (VACUUM)")
+            console.print("[7] View Current Settings")
+            console.print("[8] Reset to Defaults")
+            console.print("[9] Back to Main Menu")
 
-            choice = Prompt.ask("Choose category", choices=["1", "2", "3", "4", "5", "6", "7", "8"])
+            choice = Prompt.ask("Choose category", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"])
 
             if choice == "1":
                 self.configure_user_deletion()
             elif choice == "2":
                 self.configure_chat_deletion()
             elif choice == "3":
-                self.configure_orphaned_cleanup()
+                self.configure_knowledge_base_retention()
             elif choice == "4":
-                self.configure_audio_cache()
+                self.configure_orphaned_cleanup()
             elif choice == "5":
-                self.configure_vacuum()
+                self.configure_audio_cache()
             elif choice == "6":
-                self.show_current_settings()
+                self.configure_vacuum()
             elif choice == "7":
+                self.show_current_settings()
+            elif choice == "8":
                 self.form_data = PruneDataForm()
                 console.print("[green]Settings reset to defaults[/green]")
-            elif choice == "8":
+            elif choice == "9":
                 break
 
     def configure_user_deletion(self):
@@ -317,6 +323,38 @@ class InteractivePruneUI:
             default=True
         )
 
+    def configure_knowledge_base_retention(self):
+        """Configure age-based knowledge base retention (DANGEROUS)."""
+        console.print("\n[bold red]⚠ KNOWLEDGE BASE RETENTION — DANGEROUS[/bold red]")
+        console.print("This deletes knowledge bases purely by age, even when:")
+        console.print("  • the owner still exists and is active")
+        console.print("  • the knowledge base is actively used in RAG")
+        console.print("  • models or chats still reference it")
+        console.print("Referencing models are de-referenced; the KB and its files are removed.")
+        console.print("This is a retention policy, not orphan cleanup. There is no undo.")
+        console.print()
+
+        if Confirm.ask("Enable age-based knowledge base deletion?", default=False):
+            days = IntPrompt.ask(
+                "Delete knowledge bases older than how many days?",
+                default=365
+            )
+            self.form_data.delete_knowledge_bases_older_than_days = days
+
+            by_created = Confirm.ask(
+                "Measure age by creation date? (No = last-updated date)",
+                default=True
+            )
+            self.form_data.knowledge_bases_age_field = "created_at" if by_created else "updated_at"
+
+            console.print(
+                f"[green]✓[/green] Will delete knowledge bases older than {days} days "
+                f"(by {self.form_data.knowledge_bases_age_field})"
+            )
+        else:
+            self.form_data.delete_knowledge_bases_older_than_days = None
+            console.print("[green]Age-based knowledge base deletion disabled[/green]")
+
     def configure_orphaned_cleanup(self):
         """Configure orphaned data cleanup."""
         console.print("\n[bold]Orphaned Data Cleanup[/bold]")
@@ -330,6 +368,8 @@ class InteractivePruneUI:
 
         items = [
             ("Knowledge Bases", "delete_orphaned_knowledge_bases", "User knowledge bases"),
+            ("KB Metadata", "delete_orphaned_kb_metadata", "KB search embeddings whose KB is gone"),
+            ("Memory Points", "delete_orphaned_memory_points", "Vector points for memories users deleted"),
             ("Tools", "delete_orphaned_tools", "Custom tools"),
             ("Functions", "delete_orphaned_functions", "Actions, Pipes, Filters"),
             ("Prompts", "delete_orphaned_prompts", "Custom prompts"),
@@ -426,11 +466,24 @@ class InteractivePruneUI:
         else:
             console.print("  [dim]Disabled[/dim]")
 
+        # Knowledge base retention
+        console.print("\n[bold cyan]Knowledge Base Retention:[/bold cyan]")
+        if self.form_data.delete_knowledge_bases_older_than_days is not None:
+            console.print(
+                f"  [red]⚠ ENABLED[/red] - Delete KBs older than "
+                f"{self.form_data.delete_knowledge_bases_older_than_days} days "
+                f"(by {self.form_data.knowledge_bases_age_field}, deletes live/in-use KBs)"
+            )
+        else:
+            console.print("  [dim]Disabled[/dim]")
+
         # Orphaned data
         console.print("\n[bold cyan]Orphaned Data Cleanup:[/bold cyan]")
         orphaned_items = [
             ("Chats", self.form_data.delete_orphaned_chats),
             ("Knowledge Bases", self.form_data.delete_orphaned_knowledge_bases),
+            ("KB Metadata", self.form_data.delete_orphaned_kb_metadata),
+            ("Memory Points", self.form_data.delete_orphaned_memory_points),
             ("Tools", self.form_data.delete_orphaned_tools),
             ("Functions", self.form_data.delete_orphaned_functions),
             ("Prompts", self.form_data.delete_orphaned_prompts),
@@ -508,6 +561,10 @@ class InteractivePruneUI:
                         self.form_data.exempt_chats_in_folders,
                         self.form_data.exempt_pinned_chats,
                     ),
+                    old_knowledge_bases=await count_old_knowledge_bases(
+                        self.form_data.delete_knowledge_bases_older_than_days,
+                        self.form_data.knowledge_bases_age_field,
+                    ),
                     orphaned_chats=orphaned_counts["chats"],
                     orphaned_files=orphaned_counts["files"],
                     orphaned_tools=orphaned_counts["tools"],
@@ -521,6 +578,16 @@ class InteractivePruneUI:
                     orphaned_uploads=await count_orphaned_uploads(self._active_file_ids),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
                         self._active_file_ids, self._active_kb_ids, self._active_user_ids
+                    ),
+                    orphaned_kb_metadata=(
+                        self.vector_cleaner.count_orphaned_kb_metadata(self._active_kb_ids)
+                        if self.form_data.delete_orphaned_kb_metadata else 0
+                    ),
+                    orphaned_memory_points=(
+                        self.vector_cleaner.count_orphaned_memory_points(
+                            await get_memory_ids_by_user(self._active_user_ids)
+                        )
+                        if self.form_data.delete_orphaned_memory_points else 0
                     ),
                     audio_cache_files=count_audio_cache_files(
                         self.form_data.audio_cache_max_age_days
@@ -725,6 +792,19 @@ class InteractivePruneUI:
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} old chats")
 
+            # Stage 1b: Old knowledge bases (age-based retention). Runs before the
+            # preservation set is built so the KB's now-unreferenced files and
+            # vector collections are reclaimed by the orphan sweep that follows.
+            if self.form_data.delete_knowledge_bases_older_than_days is not None:
+                task = progress.add_task("Deleting old knowledge bases...", total=None)
+                deleted_kbs = await delete_old_knowledge_bases(
+                    self.form_data.delete_knowledge_bases_older_than_days,
+                    self.vector_cleaner,
+                    self.form_data.knowledge_bases_age_field,
+                )
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted_kbs} old knowledge bases")
+
             # Stage 2-3: Orphaned data
             task = progress.add_task("Building preservation set...", total=None)
             active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
@@ -749,12 +829,16 @@ class InteractivePruneUI:
             if self.form_data.delete_orphaned_knowledge_bases:
                 task = progress.add_task("Deleting orphaned knowledge bases...", total=None)
                 deleted = 0
+                deleted_kb_ids = []
                 async with get_async_db() as db:
                     for kb in await Knowledges.get_knowledge_bases(db=db):
                         if str(kb.user_id) not in active_user_ids:
                             self.vector_cleaner.delete_collection(kb.id)
                             await Knowledges.delete_knowledge_by_id(kb.id, db=db)
+                            deleted_kb_ids.append(str(kb.id))
                             deleted += 1
+                if deleted_kb_ids:
+                    self.vector_cleaner.delete_kb_metadata(deleted_kb_ids)
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned knowledge bases")
 
@@ -893,6 +977,23 @@ class InteractivePruneUI:
             )
             progress.update(task, completed=True)
             console.print(f"[green]✓[/green] Deleted {deleted_vector} orphaned vector collections")
+
+            # Orphaned KB metadata embeddings (KBs deleted outside the tool or
+            # by older versions that left the search-metadata entry behind)
+            if self.form_data.delete_orphaned_kb_metadata:
+                task = progress.add_task("Cleaning up orphaned KB metadata...", total=None)
+                deleted_kb_meta = self.vector_cleaner.cleanup_orphaned_kb_metadata(active_kb_ids)
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted_kb_meta} orphaned KB metadata embeddings")
+
+            # Orphaned memory points (memories deleted by active users that left
+            # their vector point behind)
+            if self.form_data.delete_orphaned_memory_points:
+                task = progress.add_task("Cleaning up orphaned memory points...", total=None)
+                memory_ids_by_user = await get_memory_ids_by_user(active_user_ids)
+                deleted_mem = self.vector_cleaner.cleanup_orphaned_memory_points(memory_ids_by_user)
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted_mem} orphaned memory points")
 
             # Audio cache
             if self.form_data.audio_cache_max_age_days is not None:

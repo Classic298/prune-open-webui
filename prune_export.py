@@ -38,7 +38,7 @@ except ImportError as e:
 
 from prune_models import PruneDataForm, PrunePreviewResult
 from prune_core import VectorDatabaseCleaner
-from prune_operations import get_all_folders, stream_rows, iter_storage_objects, _get_active_file_paths
+from prune_operations import get_all_folders, stream_rows, iter_storage_objects, _get_active_file_paths, get_memory_ids_by_user
 
 
 # Row format for the exported CSV
@@ -119,11 +119,14 @@ class PreviewExporter:
             generators = [
                 self._iter_inactive_users(),
                 self._iter_old_chats(),
+                self._iter_old_knowledge_bases(),
                 self._iter_orphaned_chats(),
                 self._iter_orphaned_files(),
                 self._iter_orphaned_workspace_items(),
                 self._iter_orphaned_uploads(),
                 self._iter_orphaned_vectors(),
+                self._iter_orphaned_kb_metadata(),
+                self._iter_orphaned_memory_points(),
                 self._iter_orphaned_chat_messages(),
                 self._iter_orphaned_automations(),
                 self._iter_orphaned_automation_runs(),
@@ -208,6 +211,33 @@ class PreviewExporter:
                     )
         except Exception as e:
             log.debug(f"Error iterating old chats: {e}")
+
+    async def _iter_old_knowledge_bases(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each knowledge base deleted by the retention policy."""
+        days = self.form_data.delete_knowledge_bases_older_than_days
+        if days is None:
+            return
+
+        age_field = self.form_data.knowledge_bases_age_field
+        age_col = Knowledge.updated_at if age_field == "updated_at" else Knowledge.created_at
+        cutoff_time = int(time.time()) - (days * 86400)
+
+        try:
+            async with get_async_db() as db:
+                async for kb_id, name, user_id in stream_rows(
+                    db, Knowledge.id, Knowledge.name, Knowledge.user_id,
+                    filter_clause=(age_col < cutoff_time)
+                ):
+                    yield ExportRow(
+                        category="old_knowledge_base",
+                        id=str(kb_id) if kb_id else "",
+                        name=(name or "")[:100],
+                        owner_id=str(user_id) if user_id else "",
+                        size_bytes="",
+                        reason=f"older than {days} days (by {age_field})",
+                    )
+        except Exception as e:
+            log.debug(f"Error iterating old knowledge bases: {e}")
 
     async def _iter_orphaned_chats(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned chat (owner no longer exists)."""
@@ -367,6 +397,45 @@ class PreviewExporter:
                 )
         except Exception as e:
             log.debug(f"Error iterating orphaned vectors: {e}")
+
+    async def _iter_orphaned_kb_metadata(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each orphaned KB metadata embedding."""
+        if not self.form_data.delete_orphaned_kb_metadata:
+            return
+        try:
+            for kb_id, context in self.vector_cleaner.iter_orphaned_kb_metadata(
+                self.active_kb_ids
+            ):
+                yield ExportRow(
+                    category="orphaned_kb_metadata",
+                    id=kb_id or "",
+                    name=context or "",
+                    owner_id="",
+                    size_bytes="",
+                    reason="knowledge base no longer exists",
+                )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned KB metadata: {e}")
+
+    async def _iter_orphaned_memory_points(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each orphaned memory vector point."""
+        if not self.form_data.delete_orphaned_memory_points:
+            return
+        try:
+            valid_ids_by_user = await get_memory_ids_by_user(self.active_user_ids)
+            for point_id, context in self.vector_cleaner.iter_orphaned_memory_points(
+                valid_ids_by_user
+            ):
+                yield ExportRow(
+                    category="orphaned_memory_point",
+                    id=point_id or "",
+                    name=context or "",
+                    owner_id="",
+                    size_bytes="",
+                    reason="memory no longer exists",
+                )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned memory points: {e}")
 
     async def _iter_orphaned_chat_messages(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned chat message."""

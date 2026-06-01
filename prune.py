@@ -117,6 +117,12 @@ Age-Based Deletion:
   --exempt-pinned-chats        Keep pinned chats even if old
   --exempt-chats-in-folders    Keep chats in folders
 
+Retention Policy (DESTRUCTIVE - deletes live, owned, in-use data):
+  --delete-knowledge-bases-older-than-days N  Delete KBs older than N days,
+                                              even if the owner exists and the
+                                              KB is in use
+  --knowledge-bases-age-field {created_at,updated_at}  Age basis (default: created_at)
+
 User Deletion:
   --delete-inactive-users-days N    Delete users inactive for N+ days
   --exempt-admin-users              Never delete admins (RECOMMENDED)
@@ -131,6 +137,10 @@ Orphaned Data:
   --no-delete-orphaned-prompts      Skip orphaned prompt deletion
   --delete-orphaned-knowledge-bases Delete orphaned knowledge bases (default: on)
   --no-delete-orphaned-knowledge-bases  Skip orphaned knowledge base deletion
+  --delete-orphaned-kb-metadata     Delete KB search-metadata embeddings whose KB is gone (default: on)
+  --no-delete-orphaned-kb-metadata  Skip orphaned KB metadata cleanup
+  --delete-orphaned-memory-points   Delete memory vectors whose memory was deleted (default: on)
+  --no-delete-orphaned-memory-points  Skip orphaned memory point cleanup
   --delete-orphaned-models          Delete orphaned models (default: on)
   --no-delete-orphaned-models       Skip orphaned model deletion
   --delete-orphaned-notes           Delete orphaned notes (default: on)
