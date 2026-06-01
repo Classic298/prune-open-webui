@@ -11,7 +11,7 @@ import logging
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Iterator, Optional, Set, Tuple, Callable, Any
-from sqlalchemy import select, text, func, and_, or_, not_, delete
+from sqlalchemy import select, text, func, and_, or_, not_, delete, update
 from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,7 +126,7 @@ async def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
-        Users, Chat, Chats, ChatFile, ChatMessage, Message, File, Files, Note, Notes,
+        Users, Chat, Chats, ChatFile, ChatMessage, Message, Memory, File, Files, Note, Notes,
         Prompt, Prompts, Model, Models, Knowledge, Knowledges,
         Function, Functions, Tool, Tools, Skill, Skills,
         Automation, AutomationRun, Automations, AutomationRuns,
@@ -141,6 +141,27 @@ except ImportError as e:
 
 from prune_models import PruneDataForm
 from prune_core import collect_file_ids_from_dict
+
+
+async def get_memory_ids_by_user(active_user_ids: Optional[Set[str]] = None) -> dict:
+    """Return {user_id: {memory_id, ...}} for reconciling memory vector points.
+
+    When active_user_ids is given, the result is keyed by exactly those users
+    (each with at least an empty set) so callers probe every active user's
+    memory collection, including users who deleted all of their memories.
+    """
+    async def _scan():
+        result = {}
+        if active_user_ids is not None:
+            result = {str(uid): set() for uid in active_user_ids}
+        async with get_async_db() as db:
+            async for mid, uid in stream_rows(db, Memory.id, Memory.user_id):
+                uid_str = str(uid)
+                if active_user_ids is not None and uid_str not in result:
+                    continue
+                result.setdefault(uid_str, set()).add(str(mid))
+        return result
+    return await retry_on_db_lock(_scan)
 
 
 async def get_kb_user_map() -> dict:
@@ -228,7 +249,7 @@ async def count_old_chats(
     days: Optional[int],
     exempt_archived: bool,
     exempt_in_folders: bool,
-    exempt_pinned: bool,
+    exempt_pinned: bool = False,
 ) -> int:
     """Count chats that would be deleted by age.
 
@@ -265,6 +286,124 @@ async def count_old_chats(
     except Exception as e:
         log.debug(f"Error counting old chats: {e}")
         return 0
+
+
+def _knowledge_age_column(age_field: str):
+    """Resolve the timestamp column used for KB age comparisons."""
+    return Knowledge.updated_at if age_field == "updated_at" else Knowledge.created_at
+
+
+async def count_old_knowledge_bases(
+    days: Optional[int], age_field: str = "created_at"
+) -> int:
+    """Count knowledge bases that would be deleted by age.
+
+    age_field selects the timestamp: 'created_at' (default) or 'updated_at'.
+    This is a retention policy: it targets live, owned, in-use KBs, not orphans.
+    """
+    if days is None:
+        return 0
+
+    cutoff_time = int(time.time()) - (days * 86400)
+    age_col = _knowledge_age_column(age_field)
+
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count(Knowledge.id)).where(age_col < cutoff_time)
+            )
+            return result.scalar_one_or_none() or 0
+    except Exception as e:
+        log.debug(f"Error counting old knowledge bases: {e}")
+        return 0
+
+
+async def _dereference_knowledge_from_models(deleted_kb_ids: Set[str]) -> int:
+    """Strip deleted KB ids from every model's meta.knowledge list.
+
+    Mirrors Open WebUI's delete_knowledge_by_id router so age-deleted KBs do
+    not leave dangling references in workspace models. Best-effort: a failure
+    here never blocks KB deletion.
+    """
+    if not deleted_kb_ids:
+        return 0
+
+    updated = 0
+    try:
+        async with get_async_db() as db:
+            async for mid, meta in stream_rows(db, Model.id, Model.meta):
+                if not isinstance(meta, dict):
+                    continue
+                kb_list = meta.get("knowledge")
+                if not isinstance(kb_list, list) or not kb_list:
+                    continue
+                new_list = [
+                    k for k in kb_list
+                    if not (isinstance(k, dict) and str(k.get("id")) in deleted_kb_ids)
+                ]
+                if len(new_list) != len(kb_list):
+                    new_meta = dict(meta)
+                    new_meta["knowledge"] = new_list
+                    await db.execute(
+                        update(Model).where(Model.id == mid).values(meta=new_meta)
+                    )
+                    updated += 1
+            await db.commit()
+        if updated:
+            log.info(f"De-referenced deleted knowledge bases from {updated} models")
+    except Exception as e:
+        log.warning(f"Failed to de-reference knowledge bases from models: {e}")
+    return updated
+
+
+async def delete_old_knowledge_bases(
+    days: Optional[int], vector_cleaner, age_field: str = "created_at"
+) -> int:
+    """Delete knowledge bases older than `days`, by created_at (default) or updated_at.
+
+    DANGER: deletes live, owned, in-use KBs regardless of whether the owner
+    still exists — a retention policy, not orphan cleanup. Mirrors Open WebUI's
+    own KB deletion: drops the KB vector collection, the KB row, and removes the
+    KB from any model's meta.knowledge. The KB's now-unreferenced files are
+    reclaimed by the normal orphan sweep that runs afterwards.
+    """
+    if days is None:
+        return 0
+
+    cutoff_time = int(time.time()) - (days * 86400)
+    age_col = _knowledge_age_column(age_field)
+    deleted = 0
+    deleted_ids = []
+
+    try:
+        async with get_async_db() as db:
+            async for (kb_id,) in stream_rows(
+                db, Knowledge.id, filter_clause=(age_col < cutoff_time)
+            ):
+                try:
+                    if vector_cleaner is not None:
+                        vector_cleaner.delete_collection(kb_id)
+                except Exception as e:
+                    log.warning(f"Failed to delete vector collection for KB {kb_id}: {e}")
+                await Knowledges.delete_knowledge_by_id(kb_id, db=db)
+                deleted_ids.append(str(kb_id))
+                deleted += 1
+    except Exception as e:
+        log.error(f"Error deleting old knowledge bases: {e}")
+
+    if deleted_ids:
+        # Remove each KB's metadata embedding from the shared KB-search
+        # collection (mirrors Open WebUI's own KB deletion). Best-effort.
+        try:
+            if vector_cleaner is not None:
+                vector_cleaner.delete_kb_metadata(deleted_ids)
+        except Exception as e:
+            log.warning(f"Failed to delete KB metadata embeddings: {e}")
+        await _dereference_knowledge_from_models(set(deleted_ids))
+        log.info(
+            f"Deleted {deleted} knowledge bases older than {days} days (by {age_field})"
+        )
+    return deleted
 
 
 async def count_orphaned_records(

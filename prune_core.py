@@ -218,6 +218,12 @@ def collect_file_ids_from_dict(obj, out: Set[str], valid_ids: Set[str], _depth: 
     # Primitives (str, int, None, etc.) - do nothing
 
 
+# Open WebUI stores one metadata embedding per knowledge base (its name +
+# description) in this shared collection, used for semantic search across KBs.
+# Separate from each KB's own {kb_id} collection that holds file/chunk vectors.
+KNOWLEDGE_BASES_COLLECTION = "knowledge-bases"
+
+
 class VectorDatabaseCleaner(ABC):
     """
     Abstract base class for vector database cleanup operations.
@@ -310,6 +316,162 @@ class VectorDatabaseCleaner(ABC):
         """
         return
         yield  # pragma: no cover — makes this a generator
+
+    # ── Knowledge base metadata embeddings (shared 'knowledge-bases' collection) ──
+    #
+    # These default implementations work for any backend whose client follows
+    # Open WebUI's unified VectorDBBase interface (get/delete/has_collection),
+    # so individual cleaners do not need to override them. Backends without a
+    # client (e.g. NoOp) fall through to a safe no-op via getattr.
+
+    def _kb_metadata_ids(self) -> Optional[Set[str]]:
+        """Return the KB ids present in the shared metadata collection.
+
+        Returns None when the collection or client is unavailable (so callers
+        can distinguish "nothing to do" from "empty"). Best-effort.
+        """
+        client = getattr(self, "vector_db_client", None)
+        if client is None:
+            return None
+        try:
+            if not client.has_collection(KNOWLEDGE_BASES_COLLECTION):
+                return None
+            result = client.get(KNOWLEDGE_BASES_COLLECTION)
+        except Exception as e:
+            log.debug(f"Could not read {KNOWLEDGE_BASES_COLLECTION} collection: {e}")
+            return None
+
+        ids: Set[str] = set()
+        raw = getattr(result, "ids", None) if result is not None else None
+        for entry in (raw or []):
+            # GetResult.ids is List[List[str]] but some backends return a flat
+            # list — handle both.
+            if isinstance(entry, (list, tuple)):
+                ids.update(str(i) for i in entry if i)
+            elif entry:
+                ids.add(str(entry))
+        return ids
+
+    def delete_kb_metadata(self, kb_ids) -> int:
+        """Remove specific KB ids from the shared metadata collection.
+
+        Mirrors Open WebUI's remove_knowledge_base_metadata_embedding. Used when
+        a KB is deleted (by age or as orphaned) so no ghost remains in KB search.
+        Best-effort; returns the number of ids requested for deletion.
+        """
+        client = getattr(self, "vector_db_client", None)
+        ids = [str(i) for i in (kb_ids or []) if i]
+        if client is None or not ids:
+            return 0
+        try:
+            if not client.has_collection(KNOWLEDGE_BASES_COLLECTION):
+                return 0
+            client.delete(collection_name=KNOWLEDGE_BASES_COLLECTION, ids=ids)
+            return len(ids)
+        except Exception as e:
+            log.debug(f"Failed to delete KB metadata embeddings: {e}")
+            return 0
+
+    def count_orphaned_kb_metadata(self, active_kb_ids: Set[str]) -> int:
+        """Count KB metadata entries whose knowledge base no longer exists."""
+        present = self._kb_metadata_ids()
+        if not present:
+            return 0
+        return sum(1 for kb_id in present if kb_id not in active_kb_ids)
+
+    def cleanup_orphaned_kb_metadata(self, active_kb_ids: Set[str]) -> int:
+        """Delete KB metadata entries whose knowledge base no longer exists."""
+        present = self._kb_metadata_ids()
+        if not present:
+            return 0
+        orphaned = [kb_id for kb_id in present if kb_id not in active_kb_ids]
+        if not orphaned:
+            return 0
+        deleted = self.delete_kb_metadata(orphaned)
+        if deleted:
+            log.info(f"Deleted {deleted} orphaned knowledge base metadata embeddings")
+        return deleted
+
+    def iter_orphaned_kb_metadata(
+        self, active_kb_ids: Set[str]
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (kb_id, context) for each orphaned KB metadata entry."""
+        present = self._kb_metadata_ids() or set()
+        for kb_id in present:
+            if kb_id not in active_kb_ids:
+                yield (kb_id, KNOWLEDGE_BASES_COLLECTION)
+
+    # ── Memory points (per-user 'user-memory-{uid}' collections) ──
+    #
+    # Open WebUI stores one vector point per memory, keyed by memory.id. When a
+    # user deletes an individual memory the point can be left behind, so these
+    # methods reconcile each active user's memory collection against the memory
+    # ids still in the database. Generic over the unified client; NoOp-safe.
+
+    def _collection_point_ids(self, collection_name: str) -> Optional[Set[str]]:
+        """Return the point ids present in a collection, or None if unavailable."""
+        client = getattr(self, "vector_db_client", None)
+        if client is None:
+            return None
+        try:
+            if not client.has_collection(collection_name):
+                return None
+            result = client.get(collection_name)
+        except Exception as e:
+            log.debug(f"Could not read collection {collection_name}: {e}")
+            return None
+
+        ids: Set[str] = set()
+        raw = getattr(result, "ids", None) if result is not None else None
+        for entry in (raw or []):
+            if isinstance(entry, (list, tuple)):
+                ids.update(str(i) for i in entry if i)
+            elif entry:
+                ids.add(str(entry))
+        return ids
+
+    def count_orphaned_memory_points(self, valid_ids_by_user: dict) -> int:
+        """Count memory points whose memory row no longer exists, per active user."""
+        total = 0
+        for uid, valid in (valid_ids_by_user or {}).items():
+            present = self._collection_point_ids(f"user-memory-{uid}")
+            if not present:
+                continue
+            total += sum(1 for pid in present if pid not in valid)
+        return total
+
+    def cleanup_orphaned_memory_points(self, valid_ids_by_user: dict) -> int:
+        """Delete memory points whose memory row no longer exists, per active user."""
+        client = getattr(self, "vector_db_client", None)
+        if client is None:
+            return 0
+        deleted = 0
+        for uid, valid in (valid_ids_by_user or {}).items():
+            collection = f"user-memory-{uid}"
+            present = self._collection_point_ids(collection)
+            if not present:
+                continue
+            orphans = [pid for pid in present if pid not in valid]
+            if not orphans:
+                continue
+            try:
+                client.delete(collection_name=collection, ids=orphans)
+                deleted += len(orphans)
+            except Exception as e:
+                log.debug(f"Failed to delete orphaned memory points for {uid}: {e}")
+        if deleted:
+            log.info(f"Deleted {deleted} orphaned memory points")
+        return deleted
+
+    def iter_orphaned_memory_points(
+        self, valid_ids_by_user: dict
+    ) -> Generator[Tuple[str, str], None, None]:
+        """Yield (point_id, context) for each orphaned memory point."""
+        for uid, valid in (valid_ids_by_user or {}).items():
+            present = self._collection_point_ids(f"user-memory-{uid}") or set()
+            for pid in present:
+                if pid not in valid:
+                    yield (pid, f"user-memory-{uid}")
 
 
 class ChromaDatabaseCleaner(VectorDatabaseCleaner):

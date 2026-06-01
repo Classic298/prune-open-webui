@@ -22,11 +22,16 @@ class PruneDataForm(BaseModel):
     exempt_archived_chats: bool = False
     exempt_pinned_chats: bool = False
     exempt_chats_in_folders: bool = False
+    # Retention policy: delete live, owned, in-use KBs by age (DANGEROUS, opt-in)
+    delete_knowledge_bases_older_than_days: Optional[int] = None
+    knowledge_bases_age_field: str = "created_at"  # 'created_at' or 'updated_at'
     delete_orphaned_chats: bool = True
     delete_orphaned_tools: bool = False
     delete_orphaned_functions: bool = False
     delete_orphaned_prompts: bool = True
     delete_orphaned_knowledge_bases: bool = True
+    delete_orphaned_kb_metadata: bool = True
+    delete_orphaned_memory_points: bool = True
     delete_orphaned_models: bool = True
     delete_orphaned_notes: bool = True
     delete_orphaned_skills: bool = False
@@ -50,6 +55,7 @@ class PrunePreviewResult(BaseModel):
     """
     inactive_users: int = 0
     old_chats: int = 0
+    old_knowledge_bases: int = 0
     orphaned_chats: int = 0
     orphaned_files: int = 0
     orphaned_tools: int = 0
@@ -62,6 +68,8 @@ class PrunePreviewResult(BaseModel):
     orphaned_folders: int = 0
     orphaned_uploads: int = 0
     orphaned_vector_collections: int = 0
+    orphaned_kb_metadata: int = 0
+    orphaned_memory_points: int = 0
     orphaned_chat_messages: int = 0
     orphaned_automations: int = 0
     orphaned_automation_runs: int = 0
@@ -72,6 +80,7 @@ class PrunePreviewResult(BaseModel):
         return (
             self.inactive_users +
             self.old_chats +
+            self.old_knowledge_bases +
             self.orphaned_chats +
             self.orphaned_files +
             self.orphaned_tools +
@@ -84,6 +93,8 @@ class PrunePreviewResult(BaseModel):
             self.orphaned_folders +
             self.orphaned_uploads +
             self.orphaned_vector_collections +
+            self.orphaned_kb_metadata +
+            self.orphaned_memory_points +
             self.orphaned_chat_messages +
             self.orphaned_automations +
             self.orphaned_automation_runs +
@@ -118,6 +129,7 @@ class PrunePreviewResult(BaseModel):
                 "Orphaned functions": self.orphaned_functions,
                 "Orphaned prompts": self.orphaned_prompts,
                 "Orphaned knowledge bases": self.orphaned_knowledge_bases,
+                "Old knowledge bases (age-based)": self.old_knowledge_bases,
                 "Orphaned models": self.orphaned_models,
                 "Orphaned notes": self.orphaned_notes,
                 "Orphaned skills": self.orphaned_skills,
@@ -127,6 +139,8 @@ class PrunePreviewResult(BaseModel):
             },
             "Storage": {
                 "Orphaned vector collections": self.orphaned_vector_collections,
+                "Orphaned KB metadata embeddings": self.orphaned_kb_metadata,
+                "Orphaned memory points": self.orphaned_memory_points,
             },
             "Cache": {
                 "Old audio cache files": self.audio_cache_files,

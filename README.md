@@ -362,30 +362,72 @@ python prune/prune.py \
   --execute
 ```
 
+**Retention Policy — expire old knowledge bases (DESTRUCTIVE):**
+```bash
+# Deletes KBs created more than 365 days ago, even if their owner is active
+# and the KB is still in use. Always preview with --dry-run first.
+python prune/prune.py \
+  --delete-knowledge-bases-older-than-days 365 \
+  --dry-run
+```
+
 ## Configuration Options
+
+The deletion flags fall into three categories, ordered from safest to most destructive by *what they target*:
+
+1. **Orphaned Data Cleanup** — removes data whose owner no longer exists. This is the tool's core, safe purpose: it only touches data nobody can reach anymore.
+2. **Age-Based Deletion** — removes data by age with a bounded blast radius (a user's own old chats, inactive accounts, derived audio cache). Time-based, but self-contained.
+3. **Retention Policy** — removes **live, owned, in-use** data purely by age. Destructive and opt-in: it deletes things an active user still relies on.
+
+A fourth group (**Execution & Output**) controls preview, execution, optimization, and logging.
+
+### 1. Orphaned Data Cleanup (owner no longer exists)
 
 | Option | Type | Default | Negate with | Description |
 |--------|------|---------|-------------|-------------|
-| `--days N` | int | None | — | Delete chats older than N days |
-| `--exempt-archived-chats` | flag | False | — | Keep archived chats |
-| `--exempt-pinned-chats` | flag | False | — | Keep pinned chats |
-| `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders |
-| `--delete-inactive-users-days N` | int | None | — | Delete users inactive N+ days |
-| `--exempt-admin-users` | flag | True | `--no-exempt-admin-users` | Never delete admins (RECOMMENDED) |
-| `--exempt-pending-users` | flag | True | `--no-exempt-pending-users` | Never delete pending users |
 | `--delete-orphaned-chats` | flag | True | `--no-delete-orphaned-chats` | Clean orphaned chats |
-| `--delete-orphaned-tools` | flag | False | — | Clean orphaned tools |
-| `--delete-orphaned-functions` | flag | False | — | Clean orphaned functions |
-| `--delete-orphaned-skills` | flag | False | — | Clean orphaned skills |
-| `--delete-orphaned-prompts` | flag | True | `--no-delete-orphaned-prompts` | Clean orphaned prompts |
 | `--delete-orphaned-knowledge-bases` | flag | True | `--no-delete-orphaned-knowledge-bases` | Clean orphaned KBs |
+| `--delete-orphaned-kb-metadata` | flag | True | `--no-delete-orphaned-kb-metadata` | Clean KB search-metadata embeddings whose KB no longer exists |
+| `--delete-orphaned-memory-points` | flag | True | `--no-delete-orphaned-memory-points` | Clean memory vector points whose memory was deleted by an active user |
+| `--delete-orphaned-prompts` | flag | True | `--no-delete-orphaned-prompts` | Clean orphaned prompts |
 | `--delete-orphaned-models` | flag | True | `--no-delete-orphaned-models` | Clean orphaned models |
 | `--delete-orphaned-notes` | flag | True | `--no-delete-orphaned-notes` | Clean orphaned notes |
 | `--delete-orphaned-folders` | flag | True | `--no-delete-orphaned-folders` | Clean orphaned folders |
 | `--delete-orphaned-chat-messages` | flag | True | `--no-delete-orphaned-chat-messages` | Clean orphaned chat_message rows |
 | `--delete-orphaned-automations` | flag | True | `--no-delete-orphaned-automations` | Clean orphaned automations and automation runs |
-| `--audio-cache-max-age-days N` | int | 30 | — | Clean audio files older than N days |
-| `--run-vacuum` | flag | False | — | Run database optimization (locks DB!) |
+| `--delete-orphaned-tools` | flag | False | — | Clean orphaned tools |
+| `--delete-orphaned-functions` | flag | False | — | Clean orphaned functions |
+| `--delete-orphaned-skills` | flag | False | — | Clean orphaned skills |
+
+### 2. Age-Based Deletion (bounded blast radius)
+
+| Option | Type | Default | Negate with | Description |
+|--------|------|---------|-------------|-------------|
+| `--days N` | int | None | — | Delete chats older than N days (by last-updated) |
+| `--exempt-archived-chats` | flag | False | — | Keep archived chats even if old |
+| `--exempt-pinned-chats` | flag | False | — | Keep pinned chats even if old |
+| `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders even if old |
+| `--delete-inactive-users-days N` | int | None | — | Delete users inactive N+ days (cascades all their data) |
+| `--exempt-admin-users` | flag | True | `--no-exempt-admin-users` | Never delete admins (RECOMMENDED) |
+| `--exempt-pending-users` | flag | True | `--no-exempt-pending-users` | Never delete pending users |
+| `--audio-cache-max-age-days N` | int | None | — | Clean audio cache files older than N days |
+
+### 3. Retention Policy (DESTRUCTIVE — deletes live, owned, in-use data)
+
+**These flags delete data that is still owned by an active user and may be in active use.** This is a data-retention/expiry policy, not orphan cleanup. There is no undo. Only enable it if your policy genuinely requires expiring live content by age.
+
+| Option | Type | Default | Negate with | Description |
+|--------|------|---------|-------------|-------------|
+| `--delete-knowledge-bases-older-than-days N` | int | None | — | Delete knowledge bases older than N days, **even if the owner exists and the KB is in use** |
+| `--knowledge-bases-age-field` | `created_at`/`updated_at` | `created_at` | — | Timestamp used to measure KB age |
+
+When a knowledge base is deleted this way, the tool mirrors Open WebUI's own KB deletion: it removes the KB's vector collection, deletes the KB record, removes the KB's search-metadata embedding from the shared `knowledge-bases` collection, and **de-references the KB from any model that points at it** (so referencing models keep working). The KB's now-unreferenced files, uploads, and per-file vector collections are reclaimed by the orphan sweep that runs immediately afterwards.
+
+### Execution & Output
+
+| Option | Type | Default | Negate with | Description |
+|--------|------|---------|-------------|-------------|
+| `--run-vacuum` | flag | False | — | Run database optimization on main and vector DBs (locks DB!) |
 | `--dry-run` | flag | True | — | Preview only (default) |
 | `--execute` | flag | — | — | Actually perform deletions |
 | `--verbose, -v` | flag | — | — | Enable debug logging |
@@ -633,12 +675,17 @@ If operations are very slow:
 - Users inactive for specified days (based on `last_active_at`)
 - Audio cache files (based on file `mtime`)
 
+**By Retention Policy (destructive, opt-in):**
+- Knowledge bases older than specified days (by `created_at` or `updated_at`), **even when the owner is active and the KB is in use**. Referencing models are de-referenced; the KB's vector collection, search-metadata embedding, record, and now-unreferenced files are removed.
+
 **Orphaned Data:**
 - Chats/tools/skills/automations/prompts/etc. from deleted users
 - Automation runs from deleted automations
 - Chat messages (analytics metadata) from deleted chats — see note below
 - Files not referenced in chats/KBs (storage objects are deleted from the configured backend — local, S3, GCS, or Azure)
 - Vector collections for deleted files/KBs
+- Knowledge base search-metadata embeddings (in the shared `knowledge-bases` collection) whose knowledge base no longer exists. Open WebUI stores one small embedding per KB (its name and description) for semantic search across knowledge bases; this removes the leftover entry when a KB was deleted outside the tool or by an older version. Toggle with `--delete-orphaned-kb-metadata` / `--no-delete-orphaned-kb-metadata`.
+- Memory vector points (in each active user's `user-memory-{id}` collection) whose memory row no longer exists. When a user deletes an individual memory, the vector point can be left behind and keep getting injected into chat context via RAG; this reconciles each active user's memory collection against the `memory` table and removes the orphans. Toggle with `--delete-orphaned-memory-points` / `--no-delete-orphaned-memory-points`.
 - Storage objects (local uploads, S3/GCS/Azure blobs) whose path does not match any `File` row in the database
 
 > [!NOTE]
@@ -650,6 +697,7 @@ If operations are very slow:
 - Valid vector collections
 - Recent data (within retention period)
 - Exempted categories (archived, pinned, folders, admins)
+- Knowledge bases, unless age-based retention (`--delete-knowledge-bases-older-than-days`) is explicitly enabled
 
 ### Vector Database Support
 

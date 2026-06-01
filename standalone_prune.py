@@ -41,11 +41,14 @@ try:
     from prune_operations import (
         count_inactive_users,
         count_old_chats,
+        count_old_knowledge_bases,
+        delete_old_knowledge_bases,
         count_orphaned_records,
         count_orphaned_uploads,
         count_audio_cache_files,
         get_active_file_ids,
         get_kb_user_map,
+        get_memory_ids_by_user,
         get_all_folders,
         safe_delete_file_by_id,
         cleanup_orphaned_uploads,
@@ -171,6 +174,27 @@ Safety Features:
         help='Keep chats in folders even if old'
     )
 
+    # Knowledge base retention (DANGEROUS: deletes live, owned, in-use KBs by age)
+    parser.add_argument(
+        '--delete-knowledge-bases-older-than-days',
+        type=int,
+        default=None,
+        metavar='N',
+        help=(
+            'Delete knowledge bases older than N days, even if the owner exists '
+            'and the KB is in use (DESTRUCTIVE retention policy, not orphan cleanup)'
+        )
+    )
+    parser.add_argument(
+        '--knowledge-bases-age-field',
+        choices=['created_at', 'updated_at'],
+        default='created_at',
+        help=(
+            'Timestamp used for --delete-knowledge-bases-older-than-days '
+            '(default: created_at)'
+        )
+    )
+
     # Inactive user deletion
     parser.add_argument(
         '--delete-inactive-users-days',
@@ -258,6 +282,30 @@ Safety Features:
         action='store_false',
         dest='delete_orphaned_knowledge_bases',
         help='Skip orphaned knowledge base deletion'
+    )
+    parser.add_argument(
+        '--delete-orphaned-kb-metadata',
+        action='store_true',
+        default=True,
+        help='Delete KB search-metadata embeddings whose knowledge base no longer exists (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-kb-metadata',
+        action='store_false',
+        dest='delete_orphaned_kb_metadata',
+        help='Skip orphaned KB metadata embedding cleanup'
+    )
+    parser.add_argument(
+        '--delete-orphaned-memory-points',
+        action='store_true',
+        default=True,
+        help='Delete memory vector points whose memory was deleted by an active user (default: True)'
+    )
+    parser.add_argument(
+        '--no-delete-orphaned-memory-points',
+        action='store_false',
+        dest='delete_orphaned_memory_points',
+        help='Skip orphaned memory point cleanup'
     )
     parser.add_argument(
         '--delete-orphaned-models',
@@ -399,12 +447,16 @@ def create_prune_form(args) -> PruneDataForm:
         exempt_archived_chats=args.exempt_archived_chats,
         exempt_pinned_chats=args.exempt_pinned_chats,
         exempt_chats_in_folders=args.exempt_chats_in_folders,
+        delete_knowledge_bases_older_than_days=args.delete_knowledge_bases_older_than_days,
+        knowledge_bases_age_field=args.knowledge_bases_age_field,
         delete_orphaned_chats=args.delete_orphaned_chats,
         delete_orphaned_tools=args.delete_orphaned_tools,
         delete_orphaned_functions=args.delete_orphaned_functions,
         delete_orphaned_skills=args.delete_orphaned_skills,
         delete_orphaned_prompts=args.delete_orphaned_prompts,
         delete_orphaned_knowledge_bases=args.delete_orphaned_knowledge_bases,
+        delete_orphaned_kb_metadata=args.delete_orphaned_kb_metadata,
+        delete_orphaned_memory_points=args.delete_orphaned_memory_points,
         delete_orphaned_models=args.delete_orphaned_models,
         delete_orphaned_notes=args.delete_orphaned_notes,
         delete_orphaned_folders=args.delete_orphaned_folders,
@@ -441,6 +493,11 @@ def print_preview_results(result: PrunePreviewResult):
         if result.orphaned_chat_messages > 0:
             print(f"   {result.orphaned_chat_messages} orphaned chat messages")
         total_items += result.old_chats + result.orphaned_chats + result.orphaned_chat_messages
+
+    if result.old_knowledge_bases > 0:
+        print(f"\n📚 Knowledge Bases (retention policy):")
+        print(f"   {result.old_knowledge_bases} knowledge bases (age-based, deletes live/in-use KBs)")
+        total_items += result.old_knowledge_bases
 
     if result.orphaned_files > 0:
         print(f"\n📁 Files:")
@@ -483,13 +540,17 @@ def print_preview_results(result: PrunePreviewResult):
             print(f"   {result.orphaned_automation_runs} orphaned automation runs")
         total_items += automation_total
 
-    if result.orphaned_uploads > 0 or result.orphaned_vector_collections > 0:
+    if result.orphaned_uploads > 0 or result.orphaned_vector_collections > 0 or result.orphaned_kb_metadata > 0 or result.orphaned_memory_points > 0:
         print(f"\n💾 Storage:")
         if result.orphaned_uploads > 0:
             print(f"   {result.orphaned_uploads} orphaned upload files")
         if result.orphaned_vector_collections > 0:
             print(f"   {result.orphaned_vector_collections} orphaned vector collections")
-        total_items += result.orphaned_uploads + result.orphaned_vector_collections
+        if result.orphaned_kb_metadata > 0:
+            print(f"   {result.orphaned_kb_metadata} orphaned KB metadata embeddings")
+        if result.orphaned_memory_points > 0:
+            print(f"   {result.orphaned_memory_points} orphaned memory points")
+        total_items += result.orphaned_uploads + result.orphaned_vector_collections + result.orphaned_kb_metadata + result.orphaned_memory_points
 
     if result.audio_cache_files > 0:
         print(f"\n🔊 Audio Cache:")
@@ -555,6 +616,10 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     form_data.exempt_chats_in_folders,
                     form_data.exempt_pinned_chats,
                 ),
+                old_knowledge_bases=await count_old_knowledge_bases(
+                    form_data.delete_knowledge_bases_older_than_days,
+                    form_data.knowledge_bases_age_field,
+                ),
                 orphaned_chats=orphaned_counts["chats"],
                 orphaned_files=orphaned_counts["files"],
                 orphaned_tools=orphaned_counts["tools"],
@@ -568,6 +633,16 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 orphaned_uploads=await count_orphaned_uploads(active_file_ids),
                 orphaned_vector_collections=vector_cleaner.count_orphaned_collections(
                     active_file_ids, active_kb_ids, active_user_ids
+                ),
+                orphaned_kb_metadata=(
+                    vector_cleaner.count_orphaned_kb_metadata(active_kb_ids)
+                    if form_data.delete_orphaned_kb_metadata else 0
+                ),
+                orphaned_memory_points=(
+                    vector_cleaner.count_orphaned_memory_points(
+                        await get_memory_ids_by_user(active_user_ids)
+                    )
+                    if form_data.delete_orphaned_memory_points else 0
                 ),
                 audio_cache_files=count_audio_cache_files(
                     form_data.audio_cache_max_age_days
@@ -649,6 +724,30 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         else:
             log.info("Skipping chat deletion (days parameter is None)")
 
+        # Stage 1b: Delete old knowledge bases (age-based retention policy).
+        # Runs before the preservation set is built so the KB's now-unreferenced
+        # files, uploads and per-file vector collections are reclaimed by the
+        # normal orphan sweep in Stages 3-4.
+        if form_data.delete_knowledge_bases_older_than_days is not None:
+            deleted_old_kbs = await delete_old_knowledge_bases(
+                form_data.delete_knowledge_bases_older_than_days,
+                vector_cleaner,
+                form_data.knowledge_bases_age_field,
+            )
+            if deleted_old_kbs > 0:
+                log.info(
+                    f"Deleted {deleted_old_kbs} knowledge bases older than "
+                    f"{form_data.delete_knowledge_bases_older_than_days} days "
+                    f"(by {form_data.knowledge_bases_age_field})"
+                )
+            else:
+                log.info(
+                    f"No knowledge bases found older than "
+                    f"{form_data.delete_knowledge_bases_older_than_days} days"
+                )
+        else:
+            log.info("Skipping age-based knowledge base deletion (disabled)")
+
         # Stage 2: Build preservation set
         log.info("Building preservation set")
 
@@ -678,12 +777,18 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
 
         deleted_kbs = 0
         if form_data.delete_orphaned_knowledge_bases:
+            deleted_kb_ids = []
             async with get_async_db() as db:
                 for kb in await Knowledges.get_knowledge_bases(db=db):
                     if str(kb.user_id) not in active_user_ids:
                         if vector_cleaner.delete_collection(kb.id):
                             await Knowledges.delete_knowledge_by_id(kb.id, db=db)
+                            deleted_kb_ids.append(str(kb.id))
                             deleted_kbs += 1
+
+            # Remove each deleted KB's search-metadata embedding too
+            if deleted_kb_ids:
+                vector_cleaner.delete_kb_metadata(deleted_kb_ids)
 
             if deleted_kbs > 0:
                 log.info(f"Deleted {deleted_kbs} orphaned knowledge bases")
@@ -854,6 +959,25 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             warnings.append(f"Vector cleanup warning: {vector_error}")
             log.warning(f"Vector cleanup completed with errors: {vector_error}")
 
+        # Clean orphaned KB metadata embeddings (KBs deleted outside the tool,
+        # or by older versions that did not remove the metadata entry).
+        if form_data.delete_orphaned_kb_metadata:
+            deleted_kb_meta = vector_cleaner.cleanup_orphaned_kb_metadata(active_kb_ids)
+            if deleted_kb_meta > 0:
+                log.info(f"Deleted {deleted_kb_meta} orphaned KB metadata embeddings")
+        else:
+            log.info("Skipping orphaned KB metadata cleanup (disabled)")
+
+        # Clean orphaned memory points (memories deleted by active users that
+        # left their vector point behind).
+        if form_data.delete_orphaned_memory_points:
+            memory_ids_by_user = await get_memory_ids_by_user(active_user_ids)
+            deleted_mem = vector_cleaner.cleanup_orphaned_memory_points(memory_ids_by_user)
+            if deleted_mem > 0:
+                log.info(f"Deleted {deleted_mem} orphaned memory points")
+        else:
+            log.info("Skipping orphaned memory point cleanup (disabled)")
+
         # Stage 5: Database optimization (optional)
         #
         # VACUUM is a DDL/maintenance command that CANNOT run inside a
@@ -960,6 +1084,13 @@ async def async_main():
         log.info(f"    Exempt pinned chats: {form_data.exempt_pinned_chats}")
         log.info(f"    Exempt chats in folders: {form_data.exempt_chats_in_folders}")
 
+    if form_data.delete_knowledge_bases_older_than_days is not None:
+        log.info(
+            f"  Delete knowledge bases older than: "
+            f"{form_data.delete_knowledge_bases_older_than_days} days "
+            f"(by {form_data.knowledge_bases_age_field}) — DESTRUCTIVE, deletes live/in-use KBs"
+        )
+
     if form_data.delete_inactive_users_days is not None:
         log.info(f"  Delete inactive users: {form_data.delete_inactive_users_days} days")
         log.info(f"    Exempt admin users: {form_data.exempt_admin_users}")
@@ -972,6 +1103,8 @@ async def async_main():
     log.info(f"    Skills: {form_data.delete_orphaned_skills}")
     log.info(f"    Prompts: {form_data.delete_orphaned_prompts}")
     log.info(f"    Knowledge Bases: {form_data.delete_orphaned_knowledge_bases}")
+    log.info(f"    KB metadata embeddings: {form_data.delete_orphaned_kb_metadata}")
+    log.info(f"    Memory points: {form_data.delete_orphaned_memory_points}")
     log.info(f"    Models: {form_data.delete_orphaned_models}")
     log.info(f"    Notes: {form_data.delete_orphaned_notes}")
     log.info(f"    Folders: {form_data.delete_orphaned_folders}")
