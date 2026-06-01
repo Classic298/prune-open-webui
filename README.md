@@ -388,7 +388,7 @@ A fourth group (**Execution & Output**) controls preview, execution, optimizatio
 | `--delete-orphaned-chats` | flag | True | `--no-delete-orphaned-chats` | Clean orphaned chats |
 | `--delete-orphaned-knowledge-bases` | flag | True | `--no-delete-orphaned-knowledge-bases` | Clean orphaned KBs |
 | `--delete-orphaned-kb-metadata` | flag | True | `--no-delete-orphaned-kb-metadata` | Clean KB search-metadata embeddings whose KB no longer exists |
-| `--delete-orphaned-memory-points` | flag | True | `--no-delete-orphaned-memory-points` | Clean memory vector points whose memory was deleted by an active user |
+| `--delete-orphaned-memories` | flag | True | `--no-delete-orphaned-memories` | Clean memories an active user deleted that the vector store kept |
 | `--delete-orphaned-prompts` | flag | True | `--no-delete-orphaned-prompts` | Clean orphaned prompts |
 | `--delete-orphaned-models` | flag | True | `--no-delete-orphaned-models` | Clean orphaned models |
 | `--delete-orphaned-notes` | flag | True | `--no-delete-orphaned-notes` | Clean orphaned notes |
@@ -685,7 +685,7 @@ If operations are very slow:
 - Files not referenced in chats/KBs (storage objects are deleted from the configured backend — local, S3, GCS, or Azure)
 - Vector collections for deleted files/KBs
 - Knowledge base search-metadata embeddings (in the shared `knowledge-bases` collection) whose knowledge base no longer exists. Open WebUI stores one small embedding per KB (its name and description) for semantic search across knowledge bases; this removes the leftover entry when a KB was deleted outside the tool or by an older version. Toggle with `--delete-orphaned-kb-metadata` / `--no-delete-orphaned-kb-metadata`.
-- Memory vector points (in each active user's `user-memory-{id}` collection) whose memory row no longer exists. When a user deletes an individual memory, the vector point can be left behind and keep getting injected into chat context via RAG; this reconciles each active user's memory collection against the `memory` table and removes the orphans. Toggle with `--delete-orphaned-memory-points` / `--no-delete-orphaned-memory-points`.
+- Memories (in each active user's `user-memory-{id}` collection) whose memory row no longer exists. When a user deletes an individual memory, the vector point can be left behind and keep getting injected into chat context via RAG; this reconciles each active user's memory collection against the `memory` table and removes the orphans. Toggle with `--delete-orphaned-memories` / `--no-delete-orphaned-memories`.
 - Storage objects (local uploads, S3/GCS/Azure blobs) whose path does not match any `File` row in the database
 
 > [!NOTE]

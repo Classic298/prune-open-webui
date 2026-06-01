@@ -310,16 +310,16 @@ Safety Features:
         help="Skip orphaned KB metadata embedding cleanup",
     )
     parser.add_argument(
-        "--delete-orphaned-memory-points",
+        "--delete-orphaned-memories",
         action="store_true",
         default=True,
-        help="Delete memory vector points whose memory was deleted by an active user (default: True)",
+        help="Delete orphaned memories left in the vector store after an active user deletes one (default: True)",
     )
     parser.add_argument(
-        "--no-delete-orphaned-memory-points",
+        "--no-delete-orphaned-memories",
         action="store_false",
-        dest="delete_orphaned_memory_points",
-        help="Skip orphaned memory point cleanup",
+        dest="delete_orphaned_memories",
+        help="Skip orphaned memory cleanup",
     )
     parser.add_argument(
         "--delete-orphaned-models",
@@ -470,7 +470,7 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_prompts=args.delete_orphaned_prompts,
         delete_orphaned_knowledge_bases=args.delete_orphaned_knowledge_bases,
         delete_orphaned_kb_metadata=args.delete_orphaned_kb_metadata,
-        delete_orphaned_memory_points=args.delete_orphaned_memory_points,
+        delete_orphaned_memories=args.delete_orphaned_memories,
         delete_orphaned_models=args.delete_orphaned_models,
         delete_orphaned_notes=args.delete_orphaned_notes,
         delete_orphaned_folders=args.delete_orphaned_folders,
@@ -571,7 +571,7 @@ def print_preview_results(result: PrunePreviewResult):
         result.orphaned_uploads > 0
         or result.orphaned_vector_collections > 0
         or result.orphaned_kb_metadata > 0
-        or result.orphaned_memory_points > 0
+        or result.orphaned_memories > 0
     ):
         print("\n💾 Storage:")
         if result.orphaned_uploads > 0:
@@ -582,13 +582,13 @@ def print_preview_results(result: PrunePreviewResult):
             )
         if result.orphaned_kb_metadata > 0:
             print(f"   {result.orphaned_kb_metadata} orphaned KB metadata embeddings")
-        if result.orphaned_memory_points > 0:
-            print(f"   {result.orphaned_memory_points} orphaned memory points")
+        if result.orphaned_memories > 0:
+            print(f"   {result.orphaned_memories} orphaned memories")
         total_items += (
             result.orphaned_uploads
             + result.orphaned_vector_collections
             + result.orphaned_kb_metadata
-            + result.orphaned_memory_points
+            + result.orphaned_memories
         )
 
     if result.audio_cache_files > 0:
@@ -682,11 +682,11 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     if form_data.delete_orphaned_kb_metadata
                     else 0
                 ),
-                orphaned_memory_points=(
-                    vector_cleaner.count_orphaned_memory_points(
+                orphaned_memories=(
+                    vector_cleaner.count_orphaned_memories(
                         await get_memory_ids_by_user(active_user_ids)
                     )
-                    if form_data.delete_orphaned_memory_points
+                    if form_data.delete_orphaned_memories
                     else 0
                 ),
                 audio_cache_files=count_audio_cache_files(
@@ -1025,17 +1025,15 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         else:
             log.info("Skipping orphaned KB metadata cleanup (disabled)")
 
-        # Clean orphaned memory points (memories deleted by active users that
+        # Clean orphaned memories (memories deleted by active users that
         # left their vector point behind).
-        if form_data.delete_orphaned_memory_points:
+        if form_data.delete_orphaned_memories:
             memory_ids_by_user = await get_memory_ids_by_user(active_user_ids)
-            deleted_mem = vector_cleaner.cleanup_orphaned_memory_points(
-                memory_ids_by_user
-            )
+            deleted_mem = vector_cleaner.cleanup_orphaned_memories(memory_ids_by_user)
             if deleted_mem > 0:
-                log.info(f"Deleted {deleted_mem} orphaned memory points")
+                log.info(f"Deleted {deleted_mem} orphaned memories")
         else:
-            log.info("Skipping orphaned memory point cleanup (disabled)")
+            log.info("Skipping orphaned memory cleanup (disabled)")
 
         # Stage 5: Database optimization (optional)
         #
@@ -1171,7 +1169,7 @@ async def async_main():
     log.info(f"    Prompts: {form_data.delete_orphaned_prompts}")
     log.info(f"    Knowledge Bases: {form_data.delete_orphaned_knowledge_bases}")
     log.info(f"    KB metadata embeddings: {form_data.delete_orphaned_kb_metadata}")
-    log.info(f"    Memory points: {form_data.delete_orphaned_memory_points}")
+    log.info(f"    Memories: {form_data.delete_orphaned_memories}")
     log.info(f"    Models: {form_data.delete_orphaned_models}")
     log.info(f"    Notes: {form_data.delete_orphaned_notes}")
     log.info(f"    Folders: {form_data.delete_orphaned_folders}")

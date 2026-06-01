@@ -32,7 +32,7 @@ class PruneDataForm(BaseModel):
     delete_orphaned_prompts: bool = True
     delete_orphaned_knowledge_bases: bool = True
     delete_orphaned_kb_metadata: bool = True
-    delete_orphaned_memory_points: bool = True
+    delete_orphaned_memories: bool = True
     delete_orphaned_models: bool = True
     delete_orphaned_notes: bool = True
     delete_orphaned_skills: bool = False
@@ -73,7 +73,7 @@ class PrunePreviewResult(BaseModel):
     orphaned_uploads: int = 0
     orphaned_vector_collections: int = 0
     orphaned_kb_metadata: int = 0
-    orphaned_memory_points: int = 0
+    orphaned_memories: int = 0
     orphaned_chat_messages: int = 0
     orphaned_automations: int = 0
     orphaned_automation_runs: int = 0
@@ -98,7 +98,7 @@ class PrunePreviewResult(BaseModel):
             + self.orphaned_uploads
             + self.orphaned_vector_collections
             + self.orphaned_kb_metadata
-            + self.orphaned_memory_points
+            + self.orphaned_memories
             + self.orphaned_chat_messages
             + self.orphaned_automations
             + self.orphaned_automation_runs
@@ -144,7 +144,7 @@ class PrunePreviewResult(BaseModel):
             "Storage": {
                 "Orphaned vector collections": self.orphaned_vector_collections,
                 "Orphaned KB metadata embeddings": self.orphaned_kb_metadata,
-                "Orphaned memory points": self.orphaned_memory_points,
+                "Orphaned memories": self.orphaned_memories,
             },
             "Cache": {
                 "Old audio cache files": self.audio_cache_files,

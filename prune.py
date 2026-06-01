@@ -144,8 +144,8 @@ Orphaned Data:
   --no-delete-orphaned-knowledge-bases  Skip orphaned knowledge base deletion
   --delete-orphaned-kb-metadata     Delete KB search-metadata embeddings whose KB is gone (default: on)
   --no-delete-orphaned-kb-metadata  Skip orphaned KB metadata cleanup
-  --delete-orphaned-memory-points   Delete memory vectors whose memory was deleted (default: on)
-  --no-delete-orphaned-memory-points  Skip orphaned memory point cleanup
+  --delete-orphaned-memories   Delete orphaned memories left in the vector DB (default: on)
+  --no-delete-orphaned-memories  Skip orphaned memory cleanup
   --delete-orphaned-models          Delete orphaned models (default: on)
   --no-delete-orphaned-models       Skip orphaned model deletion
   --delete-orphaned-notes           Delete orphaned notes (default: on)

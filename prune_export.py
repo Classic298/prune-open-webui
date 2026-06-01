@@ -143,7 +143,7 @@ class PreviewExporter:
                 self._iter_orphaned_uploads(),
                 self._iter_orphaned_vectors(),
                 self._iter_orphaned_kb_metadata(),
-                self._iter_orphaned_memory_points(),
+                self._iter_orphaned_memories(),
                 self._iter_orphaned_chat_messages(),
                 self._iter_orphaned_automations(),
                 self._iter_orphaned_automation_runs(),
@@ -498,17 +498,17 @@ class PreviewExporter:
         except Exception as e:
             log.debug(f"Error iterating orphaned KB metadata: {e}")
 
-    async def _iter_orphaned_memory_points(self) -> AsyncGenerator[ExportRow, None]:
-        """Yield ExportRow for each orphaned memory vector point."""
-        if not self.form_data.delete_orphaned_memory_points:
+    async def _iter_orphaned_memories(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each orphaned memory."""
+        if not self.form_data.delete_orphaned_memories:
             return
         try:
             valid_ids_by_user = await get_memory_ids_by_user(self.active_user_ids)
-            for point_id, context in self.vector_cleaner.iter_orphaned_memory_points(
+            for point_id, context in self.vector_cleaner.iter_orphaned_memories(
                 valid_ids_by_user
             ):
                 yield ExportRow(
-                    category="orphaned_memory_point",
+                    category="orphaned_memory",
                     id=point_id or "",
                     name=context or "",
                     owner_id="",
@@ -516,7 +516,7 @@ class PreviewExporter:
                     reason="memory no longer exists",
                 )
         except Exception as e:
-            log.debug(f"Error iterating orphaned memory points: {e}")
+            log.debug(f"Error iterating orphaned memories: {e}")
 
     async def _iter_orphaned_chat_messages(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned chat message."""

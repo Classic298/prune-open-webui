@@ -409,7 +409,7 @@ class VectorDatabaseCleaner(ABC):
             if kb_id not in active_kb_ids:
                 yield (kb_id, KNOWLEDGE_BASES_COLLECTION)
 
-    # ── Memory points (per-user 'user-memory-{uid}' collections) ──
+    # ── Memories (per-user 'user-memory-{uid}' collections) ──
     #
     # Open WebUI stores one vector point per memory, keyed by memory.id. When a
     # user deletes an individual memory the point can be left behind, so these
@@ -438,8 +438,8 @@ class VectorDatabaseCleaner(ABC):
                 ids.add(str(entry))
         return ids
 
-    def count_orphaned_memory_points(self, valid_ids_by_user: dict) -> int:
-        """Count memory points whose memory row no longer exists, per active user."""
+    def count_orphaned_memories(self, valid_ids_by_user: dict) -> int:
+        """Count memories whose database row no longer exists, per active user."""
         total = 0
         for uid, valid in (valid_ids_by_user or {}).items():
             present = self._collection_point_ids(f"user-memory-{uid}")
@@ -448,8 +448,8 @@ class VectorDatabaseCleaner(ABC):
             total += sum(1 for pid in present if pid not in valid)
         return total
 
-    def cleanup_orphaned_memory_points(self, valid_ids_by_user: dict) -> int:
-        """Delete memory points whose memory row no longer exists, per active user."""
+    def cleanup_orphaned_memories(self, valid_ids_by_user: dict) -> int:
+        """Delete memories whose database row no longer exists, per active user."""
         client = getattr(self, "vector_db_client", None)
         if client is None:
             return 0
@@ -466,15 +466,15 @@ class VectorDatabaseCleaner(ABC):
                 client.delete(collection_name=collection, ids=orphans)
                 deleted += len(orphans)
             except Exception as e:
-                log.debug(f"Failed to delete orphaned memory points for {uid}: {e}")
+                log.debug(f"Failed to delete orphaned memories for {uid}: {e}")
         if deleted:
-            log.info(f"Deleted {deleted} orphaned memory points")
+            log.info(f"Deleted {deleted} orphaned memories")
         return deleted
 
-    def iter_orphaned_memory_points(
+    def iter_orphaned_memories(
         self, valid_ids_by_user: dict
     ) -> Generator[Tuple[str, str], None, None]:
-        """Yield (point_id, context) for each orphaned memory point."""
+        """Yield (point_id, context) for each orphaned memory."""
         for uid, valid in (valid_ids_by_user or {}).items():
             present = self._collection_point_ids(f"user-memory-{uid}") or set()
             for pid in present:

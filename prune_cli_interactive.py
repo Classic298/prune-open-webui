@@ -413,9 +413,9 @@ class InteractivePruneUI:
                 "KB search embeddings whose KB is gone",
             ),
             (
-                "Memory Points",
-                "delete_orphaned_memory_points",
-                "Vector points for memories users deleted",
+                "Memories",
+                "delete_orphaned_memories",
+                "Leftover vectors for memories users deleted",
             ),
             ("Tools", "delete_orphaned_tools", "Custom tools"),
             ("Functions", "delete_orphaned_functions", "Actions, Pipes, Filters"),
@@ -552,7 +552,7 @@ class InteractivePruneUI:
             ("Chats", self.form_data.delete_orphaned_chats),
             ("Knowledge Bases", self.form_data.delete_orphaned_knowledge_bases),
             ("KB Metadata", self.form_data.delete_orphaned_kb_metadata),
-            ("Memory Points", self.form_data.delete_orphaned_memory_points),
+            ("Memories", self.form_data.delete_orphaned_memories),
             ("Tools", self.form_data.delete_orphaned_tools),
             ("Functions", self.form_data.delete_orphaned_functions),
             ("Prompts", self.form_data.delete_orphaned_prompts),
@@ -667,11 +667,11 @@ class InteractivePruneUI:
                         if self.form_data.delete_orphaned_kb_metadata
                         else 0
                     ),
-                    orphaned_memory_points=(
-                        self.vector_cleaner.count_orphaned_memory_points(
+                    orphaned_memories=(
+                        self.vector_cleaner.count_orphaned_memories(
                             await get_memory_ids_by_user(self._active_user_ids)
                         )
-                        if self.form_data.delete_orphaned_memory_points
+                        if self.form_data.delete_orphaned_memories
                         else 0
                     ),
                     audio_cache_files=count_audio_cache_files(
@@ -1130,19 +1130,17 @@ class InteractivePruneUI:
                     f"[green]✓[/green] Deleted {deleted_kb_meta} orphaned KB metadata embeddings"
                 )
 
-            # Orphaned memory points (memories deleted by active users that left
+            # Orphaned memories (memories deleted by active users that left
             # their vector point behind)
-            if self.form_data.delete_orphaned_memory_points:
-                task = progress.add_task(
-                    "Cleaning up orphaned memory points...", total=None
-                )
+            if self.form_data.delete_orphaned_memories:
+                task = progress.add_task("Cleaning up orphaned memories...", total=None)
                 memory_ids_by_user = await get_memory_ids_by_user(active_user_ids)
-                deleted_mem = self.vector_cleaner.cleanup_orphaned_memory_points(
+                deleted_mem = self.vector_cleaner.cleanup_orphaned_memories(
                     memory_ids_by_user
                 )
                 progress.update(task, completed=True)
                 console.print(
-                    f"[green]✓[/green] Deleted {deleted_mem} orphaned memory points"
+                    f"[green]✓[/green] Deleted {deleted_mem} orphaned memories"
                 )
 
             # Audio cache
