@@ -510,7 +510,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             return 0
 
         expected_collections = self._build_expected_collections(
-            active_file_ids, active_kb_ids
+            active_file_ids, active_kb_ids, active_user_ids
         )
         uuid_to_collection = self._get_collection_mappings()
 
@@ -544,7 +544,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             return
 
         expected_collections = self._build_expected_collections(
-            active_file_ids, active_kb_ids
+            active_file_ids, active_kb_ids, active_user_ids
         )
         uuid_to_collection = self._get_collection_mappings()
 
@@ -575,7 +575,7 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             return (0, None)
 
         expected_collections = self._build_expected_collections(
-            active_file_ids, active_kb_ids
+            active_file_ids, active_kb_ids, active_user_ids
         )
         uuid_to_collection = self._get_collection_mappings()
 
@@ -667,7 +667,10 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
             return False
 
     def _build_expected_collections(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """Build set of collection names that should exist."""
         expected_collections = set()
@@ -679,6 +682,11 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
         # Knowledge base collections use the KB ID directly
         for kb_id in active_kb_ids:
             expected_collections.add(kb_id)
+
+        # Preserve active users' memory collections (user-memory-{id}); only a
+        # deleted user's memory collection should be treated as orphaned.
+        for user_id in active_user_ids or set():
+            expected_collections.add(f"user-memory-{user_id}")
 
         return expected_collections
 
@@ -950,7 +958,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
 
         try:
             orphaned_collections = self._get_orphaned_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
             self.session.rollback()  # Read-only transaction
             return len(orphaned_collections)
@@ -973,7 +981,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
 
         try:
             orphaned_collections = self._get_orphaned_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
             self.session.rollback()
             for name in orphaned_collections:
@@ -1002,7 +1010,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
 
         try:
             orphaned_collections = self._get_orphaned_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             if not orphaned_collections:
@@ -1128,7 +1136,10 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
             return False
 
     def _get_orphaned_collections(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """
         Find collections that exist in PGVector but are no longer referenced.
@@ -1137,7 +1148,7 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         """
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             # Query distinct collection names from document_chunk table
@@ -1161,7 +1172,10 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
             return set()
 
     def _build_expected_collections(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """Build set of collection names that should exist."""
         expected_collections = set()
@@ -1173,6 +1187,11 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         # Knowledge base collections use the KB ID directly (same as ChromaDB)
         for kb_id in active_kb_ids:
             expected_collections.add(kb_id)
+
+        # Preserve active users' memory collections (user-memory-{id}); only a
+        # deleted user's memory collection should be treated as orphaned.
+        for user_id in active_user_ids or set():
+            expected_collections.add(f"user-memory-{user_id}")
 
         return expected_collections
 
@@ -1203,7 +1222,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         """Count orphaned Milvus collections for preview."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             # List all collections
@@ -1239,7 +1258,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         """Yield (original_name, full_collection_name) for each orphaned Milvus collection."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
             all_collections = self.vector_db_client.client.list_collections()
 
@@ -1262,7 +1281,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         """Actually delete orphaned Milvus collections."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             # List all collections
@@ -1326,7 +1345,10 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
             return False
 
     def _build_expected_collections(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """Build set of collection names that should exist."""
         expected_collections = set()
@@ -1338,6 +1360,11 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         # Knowledge base collections use the KB ID directly
         for kb_id in active_kb_ids:
             expected_collections.add(kb_id)
+
+        # Preserve active users' memory collections (user-memory-{id}); only a
+        # deleted user's memory collection should be treated as orphaned.
+        for user_id in active_user_ids or set():
+            expected_collections.add(f"user-memory-{user_id}")
 
         return expected_collections
 
@@ -1745,7 +1772,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         """Count orphaned Qdrant collections."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             # Get all collections with our prefix
@@ -1776,7 +1803,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         """Yield (original_name, full_collection_name) for each orphaned Qdrant collection."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
             all_collections = self.client.get_collections().collections
 
@@ -1798,7 +1825,7 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         """Delete orphaned Qdrant collections."""
         try:
             expected_collections = self._build_expected_collections(
-                active_file_ids, active_kb_ids
+                active_file_ids, active_kb_ids, active_user_ids
             )
 
             # Get all collections with our prefix
@@ -1848,7 +1875,10 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
             return False
 
     def _build_expected_collections(
-        self, active_file_ids: Set[str], active_kb_ids: Set[str]
+        self,
+        active_file_ids: Set[str],
+        active_kb_ids: Set[str],
+        active_user_ids: Optional[Set[str]] = None,
     ) -> Set[str]:
         """Build set of expected collection names (without prefix)."""
         expected_collections = set()
@@ -1860,6 +1890,11 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         # Knowledge base collections use the KB ID directly
         for kb_id in active_kb_ids:
             expected_collections.add(kb_id)
+
+        # Preserve active users' memory collections (user-memory-{id}); only a
+        # deleted user's memory collection should be treated as orphaned.
+        for user_id in active_user_ids or set():
+            expected_collections.add(f"user-memory-{user_id}")
 
         return expected_collections
 
