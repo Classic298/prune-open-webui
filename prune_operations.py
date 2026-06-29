@@ -134,7 +134,13 @@ try:
         Chat,
         ChatMessage,
         Message,
+        MessageReaction,
         Memory,
+        Channel,
+        ChannelMember,
+        ChannelFile,
+        ChannelWebhook,
+        AccessGrant,
         File,
         Files,
         Note,
@@ -463,6 +469,8 @@ async def count_orphaned_records(
         "chat_messages": 0,
         "automations": 0,
         "automation_runs": 0,
+        "channels": 0,
+        "channel_messages": 0,
     }
 
     try:
@@ -578,6 +586,43 @@ async def count_orphaned_records(
                         else:
                             raise
 
+            # Count orphaned channels (owner no longer active)
+            if (
+                form_data.delete_orphaned_channels
+                and Channel is not None
+                and active_user_ids
+            ):
+                try:
+                    result = await db.execute(
+                        select(func.count())
+                        .select_from(Channel)
+                        .where(not_(Channel.user_id.in_(active_user_ids)))
+                    )
+                    counts["channels"] = result.scalar_one_or_none() or 0
+                except _TABLE_MISSING_ERRORS as e:
+                    if _is_table_missing_error(e):
+                        log.debug(f"channel table does not exist: {e}")
+                    else:
+                        raise
+
+            # Count orphaned channel messages (channel_id references a missing channel)
+            if form_data.delete_orphaned_channel_messages and Channel is not None:
+                try:
+                    result = await db.execute(
+                        select(func.count(Message.id)).where(
+                            and_(
+                                Message.channel_id.isnot(None),
+                                not_(Message.channel_id.in_(select(Channel.id))),
+                            )
+                        )
+                    )
+                    counts["channel_messages"] = result.scalar_one_or_none() or 0
+                except _TABLE_MISSING_ERRORS as e:
+                    if _is_table_missing_error(e):
+                        log.debug(f"channel/message table does not exist: {e}")
+                    else:
+                        raise
+
     except Exception as e:
         log.debug(f"Error counting orphaned records: {e}")
 
@@ -638,6 +683,257 @@ async def delete_orphaned_chat_messages() -> int:
             return deleted
     except Exception as e:
         log.error(f"Error deleting orphaned chat_messages: {e}")
+        return 0
+
+
+async def _delete_channel_messages_by_ids(db, message_ids: list) -> int:
+    """Delete channel `message` rows plus their reactions and channel_file links.
+
+    SQLite-safe (does not rely on FK CASCADE). The attached files themselves are
+    cleaned afterwards by the orphaned-file / upload / vector pass, which already
+    scans message.data and so drops anything no longer referenced.
+    """
+    if not message_ids:
+        return 0
+    deleted = 0
+    batch_size = 500
+    for i in range(0, len(message_ids), batch_size):
+        batch = message_ids[i : i + batch_size]
+        if MessageReaction is not None:
+            await db.execute(
+                delete(MessageReaction).where(MessageReaction.message_id.in_(batch))
+            )
+        if ChannelFile is not None:
+            await db.execute(
+                delete(ChannelFile).where(ChannelFile.message_id.in_(batch))
+            )
+        result = await db.execute(delete(Message).where(Message.id.in_(batch)))
+        deleted += result.rowcount or 0
+    return deleted
+
+
+def _old_channel_message_filter(cutoff_ns: int, exempt_pinned: bool):
+    """Build the WHERE clause for age-based channel message pruning."""
+    conditions = [
+        Message.channel_id.isnot(None),
+        Message.created_at.isnot(None),
+        Message.created_at < cutoff_ns,
+    ]
+    if exempt_pinned and hasattr(Message, "is_pinned"):
+        conditions.append(or_(Message.is_pinned == False, Message.is_pinned == None))
+    return and_(*conditions)
+
+
+async def count_old_channel_messages(
+    max_age_days: Optional[int], exempt_pinned: bool = True
+) -> int:
+    """Count channel messages older than max_age_days (channel_message.created_at is ns)."""
+    if max_age_days is None or Message is None:
+        return 0
+    cutoff_ns = (int(time.time()) - max_age_days * 86400) * 1_000_000_000
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count(Message.id)).where(
+                    _old_channel_message_filter(cutoff_ns, exempt_pinned)
+                )
+            )
+            return result.scalar_one_or_none() or 0
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"message table does not exist: {e}")
+            return 0
+        raise
+    except Exception as e:
+        log.debug(f"Error counting old channel messages: {e}")
+        return 0
+
+
+async def delete_old_channel_messages(
+    max_age_days: Optional[int], exempt_pinned: bool = True
+) -> int:
+    """Delete channel messages older than max_age_days. Pinned messages exempt by default."""
+    if max_age_days is None or Message is None:
+        return 0
+    cutoff_ns = (int(time.time()) - max_age_days * 86400) * 1_000_000_000
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(Message.id).where(
+                    _old_channel_message_filter(cutoff_ns, exempt_pinned)
+                )
+            )
+            ids = [row[0] for row in result.fetchall()]
+            if not ids:
+                return 0
+            deleted = await _delete_channel_messages_by_ids(db, ids)
+            await db.commit()
+            if deleted > 0:
+                log.info(
+                    f"Deleted {deleted} channel messages older than {max_age_days} days"
+                )
+            return deleted
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"message table does not exist: {e}")
+            return 0
+        raise
+    except Exception as e:
+        log.error(f"Error deleting old channel messages: {e}")
+        return 0
+
+
+async def count_orphaned_channel_messages() -> int:
+    """Count channel messages whose channel no longer exists (dangling)."""
+    if Message is None or Channel is None:
+        return 0
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count(Message.id)).where(
+                    and_(
+                        Message.channel_id.isnot(None),
+                        not_(Message.channel_id.in_(select(Channel.id))),
+                    )
+                )
+            )
+            return result.scalar_one_or_none() or 0
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            return 0
+        raise
+    except Exception as e:
+        log.debug(f"Error counting orphaned channel messages: {e}")
+        return 0
+
+
+async def delete_orphaned_channel_messages() -> int:
+    """Delete channel messages whose channel no longer exists."""
+    if Message is None or Channel is None:
+        return 0
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(Message.id).where(
+                    and_(
+                        Message.channel_id.isnot(None),
+                        not_(Message.channel_id.in_(select(Channel.id))),
+                    )
+                )
+            )
+            ids = [row[0] for row in result.fetchall()]
+            if not ids:
+                return 0
+            deleted = await _delete_channel_messages_by_ids(db, ids)
+            await db.commit()
+            if deleted > 0:
+                log.info(f"Deleted {deleted} orphaned channel messages")
+            return deleted
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"channel/message table does not exist: {e}")
+            return 0
+        raise
+    except Exception as e:
+        log.error(f"Error deleting orphaned channel messages: {e}")
+        return 0
+
+
+async def count_orphaned_channels(active_user_ids: Set[str]) -> int:
+    """Count channels whose owner is no longer an active user."""
+    if Channel is None or not active_user_ids:
+        return 0
+    try:
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count())
+                .select_from(Channel)
+                .where(not_(Channel.user_id.in_(active_user_ids)))
+            )
+            return result.scalar_one_or_none() or 0
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            return 0
+        raise
+    except Exception as e:
+        log.debug(f"Error counting orphaned channels: {e}")
+        return 0
+
+
+async def delete_orphaned_channels(active_user_ids: Set[str]) -> int:
+    """Delete channels owned by deleted users, plus their messages, reactions,
+    members, file links, webhooks and access grants. Attached files are cleaned
+    by the later orphaned-file pass. Returns the number of channels deleted.
+
+    Everything runs on a single session and commits once: the OWUI manager method
+    is avoided because it opens a second connection (session sharing may be off),
+    which deadlocks SQLite's single writer mid-transaction.
+    """
+    if Channel is None or not active_user_ids:
+        return 0
+    try:
+        async with get_async_db_context() as db:
+            orphan_ids = []
+            async for cid, uid in stream_rows(db, Channel.id, Channel.user_id):
+                if str(uid) not in active_user_ids:
+                    orphan_ids.append(cid)
+            if not orphan_ids:
+                return 0
+
+            deleted_channels = 0
+            batch_size = 200
+            for i in range(0, len(orphan_ids), batch_size):
+                batch = orphan_ids[i : i + batch_size]
+
+                msg_result = await db.execute(
+                    select(Message.id).where(Message.channel_id.in_(batch))
+                )
+                await _delete_channel_messages_by_ids(
+                    db, [row[0] for row in msg_result.fetchall()]
+                )
+
+                if ChannelFile is not None:
+                    await db.execute(
+                        delete(ChannelFile).where(ChannelFile.channel_id.in_(batch))
+                    )
+                if ChannelMember is not None:
+                    await db.execute(
+                        delete(ChannelMember).where(ChannelMember.channel_id.in_(batch))
+                    )
+                if ChannelWebhook is not None:
+                    await db.execute(
+                        delete(ChannelWebhook).where(
+                            ChannelWebhook.channel_id.in_(batch)
+                        )
+                    )
+                if AccessGrant is not None:
+                    try:
+                        await db.execute(
+                            delete(AccessGrant).where(
+                                and_(
+                                    AccessGrant.resource_type == "channel",
+                                    AccessGrant.resource_id.in_(batch),
+                                )
+                            )
+                        )
+                    except _TABLE_MISSING_ERRORS as e:
+                        if not _is_table_missing_error(e):
+                            raise
+
+                result = await db.execute(delete(Channel).where(Channel.id.in_(batch)))
+                deleted_channels += result.rowcount or 0
+
+            await db.commit()
+            if deleted_channels > 0:
+                log.info(f"Deleted {deleted_channels} orphaned channels")
+            return deleted_channels
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"channel table does not exist: {e}")
+            return 0
+        raise
+    except Exception as e:
+        log.error(f"Error deleting orphaned channels: {e}")
         return 0
 
 

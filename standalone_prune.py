@@ -45,6 +45,10 @@ try:
         count_orphaned_records,
         count_orphaned_uploads,
         count_audio_cache_files,
+        count_old_channel_messages,
+        delete_old_channel_messages,
+        delete_orphaned_channel_messages,
+        delete_orphaned_channels,
         get_active_file_ids,
         get_kb_user_map,
         get_memory_ids_by_user,
@@ -340,6 +344,38 @@ Safety Features:
         help="Delete orphaned notes from deleted users (default: True)",
     )
     parser.add_argument(
+        "--channel-message-max-age-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Delete channel messages older than N days (default: disabled). Pinned messages are kept unless --no-exempt-pinned-channel-messages is given.",
+    )
+    parser.add_argument(
+        "--no-exempt-pinned-channel-messages",
+        action="store_false",
+        dest="exempt_pinned_channel_messages",
+        default=True,
+        help="Also delete pinned channel messages during age-based channel pruning",
+    )
+    parser.add_argument(
+        "--delete-orphaned-channels",
+        action="store_true",
+        default=False,
+        help="Delete channels owned by deleted users, with their messages and files (default: False)",
+    )
+    parser.add_argument(
+        "--delete-orphaned-channel-messages",
+        action="store_true",
+        default=True,
+        help="Delete channel messages whose channel no longer exists (default: True)",
+    )
+    parser.add_argument(
+        "--no-delete-orphaned-channel-messages",
+        action="store_false",
+        dest="delete_orphaned_channel_messages",
+        help="Skip orphaned channel message deletion",
+    )
+    parser.add_argument(
         "--no-delete-orphaned-notes",
         action="store_false",
         dest="delete_orphaned_notes",
@@ -473,6 +509,10 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_memories=args.delete_orphaned_memories,
         delete_orphaned_models=args.delete_orphaned_models,
         delete_orphaned_notes=args.delete_orphaned_notes,
+        channel_message_max_age_days=args.channel_message_max_age_days,
+        exempt_pinned_channel_messages=args.exempt_pinned_channel_messages,
+        delete_orphaned_channels=args.delete_orphaned_channels,
+        delete_orphaned_channel_messages=args.delete_orphaned_channel_messages,
         delete_orphaned_folders=args.delete_orphaned_folders,
         delete_orphaned_chat_messages=args.delete_orphaned_chat_messages,
         delete_orphaned_automations=args.delete_orphaned_automations,
@@ -566,6 +606,21 @@ def print_preview_results(result: PrunePreviewResult):
         if result.orphaned_automation_runs > 0:
             print(f"   {result.orphaned_automation_runs} orphaned automation runs")
         total_items += automation_total
+
+    channel_total = (
+        result.old_channel_messages
+        + result.orphaned_channels
+        + result.orphaned_channel_messages
+    )
+    if channel_total > 0:
+        print("\n💬 Channels:")
+        if result.old_channel_messages > 0:
+            print(f"   {result.old_channel_messages} old channel messages (age-based)")
+        if result.orphaned_channels > 0:
+            print(f"   {result.orphaned_channels} orphaned channels")
+        if result.orphaned_channel_messages > 0:
+            print(f"   {result.orphaned_channel_messages} orphaned channel messages")
+        total_items += channel_total
 
     if (
         result.orphaned_uploads > 0
@@ -695,6 +750,12 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 orphaned_chat_messages=orphaned_counts["chat_messages"],
                 orphaned_automations=orphaned_counts["automations"],
                 orphaned_automation_runs=orphaned_counts["automation_runs"],
+                old_channel_messages=await count_old_channel_messages(
+                    form_data.channel_message_max_age_days,
+                    form_data.exempt_pinned_channel_messages,
+                ),
+                orphaned_channels=orphaned_counts["channels"],
+                orphaned_channel_messages=orphaned_counts["channel_messages"],
             )
 
             log.info("Data pruning preview completed")
@@ -979,6 +1040,35 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         else:
             log.info("Skipping orphaned automation deletion (disabled)")
 
+        # Stage 3d: Channel pruning. Runs before Stage 4 so that files attached to
+        # pruned channel content become unreferenced and get cleaned below.
+        if form_data.delete_orphaned_channels:
+            deleted_channels = await delete_orphaned_channels(active_user_ids)
+            if deleted_channels > 0:
+                log.info(f"Deleted {deleted_channels} orphaned channels")
+        else:
+            log.info("Skipping orphaned channel deletion (disabled)")
+
+        if form_data.delete_orphaned_channel_messages:
+            deleted_ch_msgs = await delete_orphaned_channel_messages()
+            if deleted_ch_msgs > 0:
+                log.info(f"Deleted {deleted_ch_msgs} orphaned channel messages")
+        else:
+            log.info("Skipping orphaned channel message deletion (disabled)")
+
+        if form_data.channel_message_max_age_days is not None:
+            deleted_old_ch_msgs = await delete_old_channel_messages(
+                form_data.channel_message_max_age_days,
+                form_data.exempt_pinned_channel_messages,
+            )
+            if deleted_old_ch_msgs > 0:
+                log.info(
+                    f"Deleted {deleted_old_ch_msgs} channel messages older than "
+                    f"{form_data.channel_message_max_age_days} days"
+                )
+        else:
+            log.info("Skipping age-based channel message deletion (disabled)")
+
         # Stage 4: Clean up orphaned physical files and vector collections.
         # Recompute preservation sets after Stage 3 deletions — files that
         # were only referenced by now-deleted chats/KBs should no longer
@@ -1174,6 +1264,14 @@ async def async_main():
     log.info(f"    Notes: {form_data.delete_orphaned_notes}")
     log.info(f"    Folders: {form_data.delete_orphaned_folders}")
     log.info(f"    Automations: {form_data.delete_orphaned_automations}")
+    log.info(f"    Orphaned channels: {form_data.delete_orphaned_channels}")
+    log.info(
+        f"    Orphaned channel messages: {form_data.delete_orphaned_channel_messages}"
+    )
+    if form_data.channel_message_max_age_days is not None:
+        log.info(
+            f"    Channel messages older than: {form_data.channel_message_max_age_days} days (exempt pinned: {form_data.exempt_pinned_channel_messages})"
+        )
 
     if form_data.audio_cache_max_age_days is not None:
         log.info(f"  Audio cache cleanup: {form_data.audio_cache_max_age_days} days")

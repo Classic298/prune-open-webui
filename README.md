@@ -32,6 +32,7 @@ The Prune Tool provides a safe and powerful way to clean up your Open WebUI inst
 - Deleting old chats and conversations
 - Removing inactive user accounts
 - Cleaning orphaned data (files, tools, skills, automations, prompts, etc.)
+- Pruning channels and channel messages (age-based, plus orphaned channels/messages)
 - Removing old audio cache files
 - Optimizing database performance
 
@@ -73,9 +74,15 @@ Orphaned storage objects (files with no matching `File` row in the database) are
 - Admin user protection
 - Detailed logging of all operations
 
-### Known Limitations
+### Channel Pruning
 
-- **Channels are not pruned.** The tool does not delete or clean up channels or channel messages. There has been no demand for this feature so far. If you need it, feel free to open a discussion.
+Channels and channel messages can be cleaned up in three ways:
+
+- **Age-based channel messages** (`--channel-message-max-age-days N`): delete messages older than N days from all channels while keeping the channels themselves. Pinned messages are preserved unless `--no-exempt-pinned-channel-messages` is given. Useful for keeping busy Support/Alerts channels fast and tidy.
+- **Orphaned channels** (`--delete-orphaned-channels`, off by default): delete channels owned by a deleted user, along with their messages, reactions, members, file links and access grants.
+- **Orphaned channel messages** (`--delete-orphaned-channel-messages`, on by default): delete messages whose channel no longer exists.
+
+Files attached to pruned channel messages become unreferenced and are removed by the orphaned-file / upload / vector cleanup that always runs afterwards.
 
 ### Compatibility
 
@@ -398,6 +405,8 @@ A fourth group (**Execution & Output**) controls preview, execution, optimizatio
 | `--delete-orphaned-tools` | flag | False | — | Clean orphaned tools |
 | `--delete-orphaned-functions` | flag | False | — | Clean orphaned functions |
 | `--delete-orphaned-skills` | flag | False | — | Clean orphaned skills |
+| `--delete-orphaned-channels` | flag | False | — | Delete channels owned by deleted users (with their messages/files) |
+| `--delete-orphaned-channel-messages` | flag | True | `--no-delete-orphaned-channel-messages` | Delete channel messages whose channel no longer exists |
 
 ### 2. Age-Based Deletion (bounded blast radius)
 
@@ -411,6 +420,8 @@ A fourth group (**Execution & Output**) controls preview, execution, optimizatio
 | `--exempt-admin-users` | flag | True | `--no-exempt-admin-users` | Never delete admins (RECOMMENDED) |
 | `--exempt-pending-users` | flag | True | `--no-exempt-pending-users` | Never delete pending users |
 | `--audio-cache-max-age-days N` | int | None | — | Clean audio cache files older than N days |
+| `--channel-message-max-age-days N` | int | None | — | Delete channel messages older than N days (channels are kept) |
+| `--no-exempt-pinned-channel-messages` | flag | (pinned kept) | — | Also delete pinned messages during age-based channel pruning |
 
 ### 3. Retention Policy (DESTRUCTIVE — deletes live, owned, in-use data)
 

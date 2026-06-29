@@ -38,6 +38,8 @@ try:
         Automation,
         AutomationRun,
         ChatMessage,
+        Message,
+        Channel,
         get_async_db,
         CACHE_DIR,
     )
@@ -147,6 +149,9 @@ class PreviewExporter:
                 self._iter_orphaned_chat_messages(),
                 self._iter_orphaned_automations(),
                 self._iter_orphaned_automation_runs(),
+                self._iter_orphaned_channels(),
+                self._iter_orphaned_channel_messages(),
+                self._iter_old_channel_messages(),
                 self._iter_audio_cache(),
             ]
 
@@ -543,6 +548,97 @@ class PreviewExporter:
             log.debug(
                 f"Error iterating orphaned chat messages (table may not exist): {e}"
             )
+
+    async def _iter_orphaned_channels(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each channel owned by a deleted user."""
+        if (
+            not self.form_data.delete_orphaned_channels
+            or Channel is None
+            or not self.active_user_ids
+        ):
+            return
+        try:
+            async with get_async_db() as db:
+                async for channel_id, name, user_id in stream_rows(
+                    db,
+                    Channel.id,
+                    Channel.name,
+                    Channel.user_id,
+                    filter_clause=not_(Channel.user_id.in_(self.active_user_ids)),
+                ):
+                    yield ExportRow(
+                        category="orphaned_channel",
+                        id=str(channel_id) if channel_id else "",
+                        name=str(name or "")[:100],
+                        owner_id=user_id or "",
+                        size_bytes="",
+                        reason="owner not in active users",
+                    )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned channels: {e}")
+
+    async def _iter_orphaned_channel_messages(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each channel message whose channel no longer exists."""
+        if (
+            not self.form_data.delete_orphaned_channel_messages
+            or Channel is None
+            or Message is None
+        ):
+            return
+        try:
+            async with get_async_db() as db:
+                async for message_id, channel_id in stream_rows(
+                    db,
+                    Message.id,
+                    Message.channel_id,
+                    filter_clause=and_(
+                        Message.channel_id.isnot(None),
+                        not_(Message.channel_id.in_(select(Channel.id))),
+                    ),
+                ):
+                    yield ExportRow(
+                        category="orphaned_channel_message",
+                        id=message_id or "",
+                        name=f"channel: {channel_id}" if channel_id else "",
+                        owner_id="",
+                        size_bytes="",
+                        reason="parent channel no longer exists",
+                    )
+        except Exception as e:
+            log.debug(f"Error iterating orphaned channel messages: {e}")
+
+    async def _iter_old_channel_messages(self) -> AsyncGenerator[ExportRow, None]:
+        """Yield ExportRow for each channel message older than the configured age."""
+        max_age_days = self.form_data.channel_message_max_age_days
+        if max_age_days is None or Message is None:
+            return
+        cutoff_ns = (int(time.time()) - max_age_days * 86400) * 1_000_000_000
+        conditions = [
+            Message.channel_id.isnot(None),
+            Message.created_at.isnot(None),
+            Message.created_at < cutoff_ns,
+        ]
+        if self.form_data.exempt_pinned_channel_messages and hasattr(
+            Message, "is_pinned"
+        ):
+            conditions.append(
+                or_(Message.is_pinned == False, Message.is_pinned == None)
+            )
+        try:
+            async with get_async_db() as db:
+                async for message_id, channel_id in stream_rows(
+                    db, Message.id, Message.channel_id, filter_clause=and_(*conditions)
+                ):
+                    yield ExportRow(
+                        category="old_channel_message",
+                        id=message_id or "",
+                        name=f"channel: {channel_id}" if channel_id else "",
+                        owner_id="",
+                        size_bytes="",
+                        reason=f"older than {max_age_days} days",
+                    )
+        except Exception as e:
+            log.debug(f"Error iterating old channel messages: {e}")
 
     async def _iter_orphaned_automations(self) -> AsyncGenerator[ExportRow, None]:
         """Yield ExportRow for each orphaned automation (owner no longer exists).
