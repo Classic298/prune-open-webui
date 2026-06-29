@@ -65,6 +65,10 @@ try:
         delete_orphaned_chat_messages,
         delete_orphaned_automations,
         delete_orphaned_automation_runs,
+        count_old_channel_messages,
+        delete_old_channel_messages,
+        delete_orphaned_channel_messages,
+        delete_orphaned_channels,
         stream_rows,
     )
 
@@ -244,14 +248,16 @@ class InteractivePruneUI:
             console.print("[2] Chat Deletion Settings")
             console.print("[3] Knowledge Base Retention [red](DANGEROUS)[/red]")
             console.print("[4] Orphaned Data Cleanup")
-            console.print("[5] Audio Cache Cleanup")
-            console.print("[6] System Optimization (VACUUM)")
-            console.print("[7] View Current Settings")
-            console.print("[8] Reset to Defaults")
-            console.print("[9] Back to Main Menu")
+            console.print("[5] Channel Message Age Pruning")
+            console.print("[6] Audio Cache Cleanup")
+            console.print("[7] System Optimization (VACUUM)")
+            console.print("[8] View Current Settings")
+            console.print("[9] Reset to Defaults")
+            console.print("[10] Back to Main Menu")
 
             choice = Prompt.ask(
-                "Choose category", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+                "Choose category",
+                choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
             )
 
             if choice == "1":
@@ -263,15 +269,17 @@ class InteractivePruneUI:
             elif choice == "4":
                 self.configure_orphaned_cleanup()
             elif choice == "5":
-                self.configure_audio_cache()
+                self.configure_channels()
             elif choice == "6":
-                self.configure_vacuum()
+                self.configure_audio_cache()
             elif choice == "7":
-                self.show_current_settings()
+                self.configure_vacuum()
             elif choice == "8":
+                self.show_current_settings()
+            elif choice == "9":
                 self.form_data = PruneDataForm()
                 console.print("[green]Settings reset to defaults[/green]")
-            elif choice == "9":
+            elif choice == "10":
                 break
 
     def configure_user_deletion(self):
@@ -433,6 +441,16 @@ class InteractivePruneUI:
                 "delete_orphaned_chat_messages",
                 "Analytics data from deleted chats",
             ),
+            (
+                "Channels",
+                "delete_orphaned_channels",
+                "Channels owned by deleted users (+ their messages/files)",
+            ),
+            (
+                "Channel Messages",
+                "delete_orphaned_channel_messages",
+                "Messages whose channel no longer exists",
+            ),
         ]
 
         for name, attr, desc in items:
@@ -467,6 +485,29 @@ class InteractivePruneUI:
         else:
             self.form_data.audio_cache_max_age_days = None
             console.print("[green]Audio cache cleanup disabled[/green]")
+
+    def configure_channels(self):
+        """Configure age-based channel message pruning."""
+        console.print("\n[bold]Channel Message Age Pruning[/bold]")
+        console.print(
+            "Delete old messages from channels to keep them fast/clean (channels are kept)"
+        )
+        console.print()
+
+        if Confirm.ask("Enable age-based channel message pruning?", default=False):
+            days = IntPrompt.ask(
+                "Delete channel messages older than how many days?", default=90
+            )
+            self.form_data.channel_message_max_age_days = days
+            self.form_data.exempt_pinned_channel_messages = Confirm.ask(
+                "Keep pinned messages?", default=True
+            )
+            console.print(
+                f"[green]✓[/green] Will delete channel messages older than {days} days"
+            )
+        else:
+            self.form_data.channel_message_max_age_days = None
+            console.print("[green]Age-based channel message pruning disabled[/green]")
 
     def configure_vacuum(self):
         """Configure VACUUM optimization."""
@@ -562,10 +603,24 @@ class InteractivePruneUI:
             ("Folders", self.form_data.delete_orphaned_folders),
             ("Automations", self.form_data.delete_orphaned_automations),
             ("Chat Messages", self.form_data.delete_orphaned_chat_messages),
+            ("Channels", self.form_data.delete_orphaned_channels),
+            ("Channel Messages", self.form_data.delete_orphaned_channel_messages),
         ]
         for name, enabled in orphaned_items:
             status = "[green]✓[/green]" if enabled else "[dim]✗[/dim]"
             console.print(f"  {status} {name}")
+
+        # Channel message age pruning
+        console.print("\n[bold cyan]Channel Message Age Pruning:[/bold cyan]")
+        if self.form_data.channel_message_max_age_days is not None:
+            console.print(
+                f"  [yellow]Enabled[/yellow] - Delete channel messages older than {self.form_data.channel_message_max_age_days} days"
+            )
+            console.print(
+                f"    Exempt pinned: {'Yes' if self.form_data.exempt_pinned_channel_messages else 'No'}"
+            )
+        else:
+            console.print("  [dim]Disabled[/dim]")
 
         # Audio cache
         console.print("\n[bold cyan]Audio Cache:[/bold cyan]")
@@ -680,6 +735,12 @@ class InteractivePruneUI:
                     orphaned_chat_messages=orphaned_counts["chat_messages"],
                     orphaned_automations=orphaned_counts["automations"],
                     orphaned_automation_runs=orphaned_counts["automation_runs"],
+                    old_channel_messages=await count_old_channel_messages(
+                        self.form_data.channel_message_max_age_days,
+                        self.form_data.exempt_pinned_channel_messages,
+                    ),
+                    orphaned_channels=orphaned_counts["channels"],
+                    orphaned_channel_messages=orphaned_counts["channel_messages"],
                 )
 
                 progress.update(task, completed=True)
@@ -1082,6 +1143,34 @@ class InteractivePruneUI:
                 progress.update(task, completed=True)
                 console.print(
                     f"[green]✓[/green] Deleted {deleted_automations} orphaned automations, {deleted_runs} orphaned automation runs"
+                )
+
+            # Channels (before Stage 4 so attached files get cleaned by the recompute)
+            if self.form_data.delete_orphaned_channels:
+                task = progress.add_task("Deleting orphaned channels...", total=None)
+                deleted = await delete_orphaned_channels(active_user_ids)
+                progress.update(task, completed=True)
+                console.print(f"[green]✓[/green] Deleted {deleted} orphaned channels")
+
+            if self.form_data.delete_orphaned_channel_messages:
+                task = progress.add_task(
+                    "Deleting orphaned channel messages...", total=None
+                )
+                deleted = await delete_orphaned_channel_messages()
+                progress.update(task, completed=True)
+                console.print(
+                    f"[green]✓[/green] Deleted {deleted} orphaned channel messages"
+                )
+
+            if self.form_data.channel_message_max_age_days is not None:
+                task = progress.add_task("Deleting old channel messages...", total=None)
+                deleted = await delete_old_channel_messages(
+                    self.form_data.channel_message_max_age_days,
+                    self.form_data.exempt_pinned_channel_messages,
+                )
+                progress.update(task, completed=True)
+                console.print(
+                    f"[green]✓[/green] Deleted {deleted} old channel messages"
                 )
 
             # Stage 4: Cleanup physical files and vector collections.

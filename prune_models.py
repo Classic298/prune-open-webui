@@ -39,6 +39,17 @@ class PruneDataForm(BaseModel):
     delete_orphaned_folders: bool = True
     delete_orphaned_chat_messages: bool = True
     delete_orphaned_automations: bool = True
+    # Channel pruning
+    channel_message_max_age_days: Optional[int] = (
+        None  # age-based channel message cleanup; opt-in
+    )
+    exempt_pinned_channel_messages: bool = True
+    delete_orphaned_channels: bool = (
+        False  # channels owned by deleted users (shared infra — off by default)
+    )
+    delete_orphaned_channel_messages: bool = (
+        True  # messages whose channel no longer exists
+    )
     audio_cache_max_age_days: Optional[int] = (
         None  # Changed from 30 to None - must be explicitly enabled
     )
@@ -77,6 +88,9 @@ class PrunePreviewResult(BaseModel):
     orphaned_chat_messages: int = 0
     orphaned_automations: int = 0
     orphaned_automation_runs: int = 0
+    old_channel_messages: int = 0
+    orphaned_channels: int = 0
+    orphaned_channel_messages: int = 0
     audio_cache_files: int = 0
 
     def total_items(self) -> int:
@@ -102,6 +116,9 @@ class PrunePreviewResult(BaseModel):
             + self.orphaned_chat_messages
             + self.orphaned_automations
             + self.orphaned_automation_runs
+            + self.old_channel_messages
+            + self.orphaned_channels
+            + self.orphaned_channel_messages
             + self.audio_cache_files
         )
 
@@ -123,6 +140,11 @@ class PrunePreviewResult(BaseModel):
             "Automations": {
                 "Orphaned automations": self.orphaned_automations,
                 "Orphaned automation runs": self.orphaned_automation_runs,
+            },
+            "Channels": {
+                "Old channel messages (age-based)": self.old_channel_messages,
+                "Orphaned channels": self.orphaned_channels,
+                "Orphaned channel messages": self.orphaned_channel_messages,
             },
             "Files": {
                 "Orphaned file records": self.orphaned_files,

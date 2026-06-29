@@ -111,7 +111,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
     from open_webui.models.users import Users
     from open_webui.models.chats import Chat, Chats, ChatFile
     from open_webui.models.chat_messages import ChatMessage
-    from open_webui.models.messages import Message
+    from open_webui.models.messages import Message, MessageReaction, Messages
     from open_webui.models.memories import Memory, Memories
     from open_webui.models.files import File, Files
     from open_webui.models.notes import Note, Notes
@@ -138,6 +138,25 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
         Automation = None
         AutomationRun = None
 
+    # Channels + channel messages (for channel pruning)
+    try:
+        from open_webui.models.channels import (
+            Channel,
+            ChannelMember,
+            ChannelFile,
+            Channels,
+        )
+    except ImportError:
+        Channel = ChannelMember = ChannelFile = Channels = None
+    try:
+        from open_webui.models.channels import ChannelWebhook
+    except ImportError:
+        ChannelWebhook = None
+    try:
+        from open_webui.models.access_grants import AccessGrant
+    except ImportError:
+        AccessGrant = None
+
     # Optional manager classes — not required for prune operations
     try:
         from open_webui.models.automations import Automations, AutomationRuns
@@ -161,7 +180,7 @@ elif _import_strategy == "git":
     from backend.open_webui.models.users import Users
     from backend.open_webui.models.chats import Chat, Chats, ChatFile
     from backend.open_webui.models.chat_messages import ChatMessage
-    from backend.open_webui.models.messages import Message
+    from backend.open_webui.models.messages import Message, MessageReaction, Messages
     from backend.open_webui.models.memories import Memory, Memories
     from backend.open_webui.models.files import File, Files
     from backend.open_webui.models.notes import Note, Notes
@@ -187,6 +206,25 @@ elif _import_strategy == "git":
     except ImportError:
         Automation = None
         AutomationRun = None
+
+    # Channels + channel messages (for channel pruning)
+    try:
+        from backend.open_webui.models.channels import (
+            Channel,
+            ChannelMember,
+            ChannelFile,
+            Channels,
+        )
+    except ImportError:
+        Channel = ChannelMember = ChannelFile = Channels = None
+    try:
+        from backend.open_webui.models.channels import ChannelWebhook
+    except ImportError:
+        ChannelWebhook = None
+    try:
+        from backend.open_webui.models.access_grants import AccessGrant
+    except ImportError:
+        AccessGrant = None
 
     # Optional manager classes — not required for prune operations
     try:
@@ -233,6 +271,14 @@ __all__ = [
     "ChatFile",
     "ChatMessage",
     "Message",
+    "MessageReaction",
+    "Messages",
+    "Channel",
+    "ChannelMember",
+    "ChannelFile",
+    "ChannelWebhook",
+    "Channels",
+    "AccessGrant",
     "Memory",
     "Memories",
     "File",
