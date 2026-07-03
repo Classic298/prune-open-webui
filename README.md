@@ -14,7 +14,7 @@ A standalone command-line tool for cleaning up your Open WebUI instance, reclaim
 2. [Features](#features)
 3. [Installation](#installation)
    - [Environment Variables](#environment-variables)
-   - [Method 1: Docker (Recommended)](#method-1-docker-installation-recommended)
+   - [Method 1: Docker (Recommended)](#method-1-docker-recommended)
    - [Method 2: Systemd Service](#method-2-systemd-service-installation)
    - [Method 3: Pip](#method-3-pip-installation)
    - [Method 4: Git (Manual)](#method-4-git-installation-manual-install)
@@ -166,70 +166,22 @@ The prune tool reads variables from the current environment and, if present, fro
 
 ---
 
-## Method 1: Docker Installation (Recommended)
+## Method 1: Docker (Recommended)
 
-Running inside the Docker container is the **recommended approach** because all dependencies (including vector database libraries like chromadb) are already installed.
+Pull and run the pre-built image from GitHub Container Registry:
 
-**Step 1: Download the prune tool** (one-time setup)
 ```bash
-git clone https://github.com/Classic298/prune-open-webui.git prune
+docker run --rm \
+  -e DATABASE_URL="sqlite:////data/webui.db" \
+  -e WEBUI_SECRET_KEY="your-secret-key" \
+  -v /path/to/open-webui/data:/data \
+  ghcr.io/classic298/prune-open-webui:latest \
+  --days 90 --dry-run
 ```
 
-**⚠️ The trailing `prune` in the clone command is required** — it ensures the repository is cloned into a folder named `prune/` instead of `prune-open-webui/`.
+Replace `/path/to/open-webui/data` with the path to your Open WebUI data directory and set environment variables to match your configuration. Remove `--dry-run` and add `--execute` when ready to perform deletions.
 
-**Step 2: Make the prune tool available in the container** (one-time setup)
-
-**A volume mount is the recommended approach.** Mounting the `prune/` folder into the container (rather than copying it in with `docker cp`) keeps the scripts in sync with your local copy, so you never have to re-copy after pulling updates. Add the mount to your `docker-compose.yml`:
-
-```yaml
-services:
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    volumes:
-      - open-webui:/app/backend/data
-      - ./prune:/app/prune          # Mount the prune tool
-```
-
-Then recreate the container so the mount takes effect:
-```bash
-docker compose up -d
-```
-
-> **Alternative (one-off copy):** If you cannot edit your compose file, copy the folder in instead, but you will have to re-copy after every update.
-> ```bash
-> # Find your Open WebUI container name
-> docker ps | grep open-webui
->
-> # Copy the prune folder into the container
-> docker cp prune <container-name>:/app/
-> ```
-
-**Step 3: Run the prune script**
-
-**Option A: Run interactively inside container (Recommended)**
-```bash
-docker exec -it <container-name> bash
-cd /app
-python prune/prune.py
-```
-
-**Option B: Direct execution from host**
-```bash
-docker exec <container-name> python /app/prune/prune.py --days 90 --execute
-```
-
-**Option C: Preview mode from host**
-```bash
-docker exec <container-name> python /app/prune/prune.py --days 90 --dry-run
-```
-
-**Important Notes:**
-- **Always execute inside the container** to ensure all dependencies are available
-- Environment variables are automatically inherited from the container
-- All vector database dependencies (chromadb, etc.) are pre-installed in the container
-- Data persists in your Docker volumes
-
-> A correctly configured Open WebUI container already has the required variables and `docker exec` inherits them, so no extra setup is needed. See [Environment Variables](#environment-variables).
+All dependencies (including vector database libraries) are pre-installed in the image.
 
 ---
 
