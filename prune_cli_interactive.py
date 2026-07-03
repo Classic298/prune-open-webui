@@ -986,15 +986,23 @@ class InteractivePruneUI:
             active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
-            # Delete orphaned files — stream id+user_id only, iterate directly
+            # Delete orphaned files. A file is orphaned only when unreferenced:
+            # a deleted uploader's files can still back another user's live KB
+            # or chat. Fresh uploads get a grace window (upload and first
+            # reference are separate requests).
             task = progress.add_task("Deleting orphaned files...", total=None)
             deleted_files = 0
+            grace_cutoff = int(time.time()) - max(
+                0,
+                int(getattr(self.form_data, "orphan_file_grace_hours", 0) or 0),
+            ) * 3600
             async with get_async_db() as db:
-                async for fid, uid in stream_rows(db, File.id, File.user_id):
-                    if (
-                        str(fid) not in active_file_ids
-                        or str(uid) not in active_user_ids
-                    ):
+                async for fid, _uid, created_at in stream_rows(
+                    db, File.id, File.user_id, File.created_at
+                ):
+                    if created_at is not None and created_at > grace_cutoff:
+                        continue
+                    if str(fid) not in active_file_ids:
                         if await safe_delete_file_by_id(
                             fid, self.vector_cleaner, db=db
                         ):

@@ -263,6 +263,13 @@ Safety Features:
         help="Skip orphaned chat deletion",
     )
     parser.add_argument(
+        "--orphan-file-grace-hours",
+        type=int,
+        default=24,
+        metavar="N",
+        help="Never treat files younger than N hours as orphaned, protecting uploads not yet attached to a chat or KB (default: 24, 0 = no grace window)",
+    )
+    parser.add_argument(
         "--delete-orphaned-tools",
         action="store_true",
         default=False,
@@ -503,6 +510,7 @@ def create_prune_form(args) -> PruneDataForm:
         delete_knowledge_bases_older_than_days=args.delete_knowledge_bases_older_than_days,
         knowledge_bases_age_field=args.knowledge_bases_age_field,
         delete_orphaned_chats=args.delete_orphaned_chats,
+        orphan_file_grace_hours=args.orphan_file_grace_hours,
         delete_orphaned_tools=args.delete_orphaned_tools,
         delete_orphaned_functions=args.delete_orphaned_functions,
         delete_orphaned_skills=args.delete_orphaned_skills,
@@ -885,11 +893,19 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         log.info("Deleting orphaned database records")
 
         deleted_files = 0
-        # Stream id+user_id only, iterate directly — keyset pagination uses
-        # fresh queries per batch, so deletions don't disrupt iteration
+        # A file is orphaned only when unreferenced: a deleted uploader's files
+        # can still back another user's live KB or chat. Fresh uploads get a
+        # grace window (upload and first reference are separate requests).
+        grace_cutoff = int(time.time()) - max(
+            0, int(getattr(form_data, "orphan_file_grace_hours", 0) or 0)
+        ) * 3600
         async with get_async_db() as db:
-            async for fid, uid in stream_rows(db, File.id, File.user_id):
-                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+            async for fid, _uid, created_at in stream_rows(
+                db, File.id, File.user_id, File.created_at
+            ):
+                if created_at is not None and created_at > grace_cutoff:
+                    continue
+                if str(fid) not in active_file_ids:
                     if await safe_delete_file_by_id(fid, vector_cleaner, db=db):
                         deleted_files += 1
 

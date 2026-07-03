@@ -489,8 +489,15 @@ async def count_orphaned_records(
             # active_user_ids can exceed SQLite's ~999 parameter limit on
             # large instances.
             orphaned_file_count = 0
-            async for fid, uid in stream_rows(db, File.id, File.user_id):
-                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+            grace_cutoff = int(time.time()) - max(
+                0, int(getattr(form_data, "orphan_file_grace_hours", 0) or 0)
+            ) * 3600
+            async for fid, _uid, created_at in stream_rows(
+                db, File.id, File.user_id, File.created_at
+            ):
+                if created_at is not None and created_at > grace_cutoff:
+                    continue  # freshly uploaded; may not be referenced yet
+                if str(fid) not in active_file_ids:
                     orphaned_file_count += 1
             counts["files"] = orphaned_file_count
 
