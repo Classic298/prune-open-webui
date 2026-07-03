@@ -1202,6 +1202,24 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         return expected_collections
 
 
+def _ensure_milvus_default_connection():
+    """utility.*/Collection() use pymilvus' global 'default' alias, which the
+    standard-mode Open WebUI client never opens at init (only lazily in
+    query()). Connect it if missing so cleanup works on a fresh process."""
+    try:
+        from pymilvus import connections
+
+        if connections.has_connection("default"):
+            return
+        try:
+            from open_webui.config import MILVUS_URI, MILVUS_TOKEN, MILVUS_DB
+        except ImportError:
+            from backend.open_webui.config import MILVUS_URI, MILVUS_TOKEN, MILVUS_DB
+        connections.connect(uri=MILVUS_URI, token=MILVUS_TOKEN, db_name=MILVUS_DB)
+    except Exception as e:
+        log.debug(f"Could not establish Milvus default connection: {e}")
+
+
 class MilvusDatabaseCleaner(VectorDatabaseCleaner):
     """
     Milvus database cleanup implementation (standard mode).
@@ -1286,6 +1304,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
     ) -> tuple[int, Optional[str]]:
         """Actually delete orphaned Milvus collections."""
         try:
+            _ensure_milvus_default_connection()
             expected_collections = self._build_expected_collections(
                 active_file_ids, active_kb_ids, active_user_ids
             )
@@ -1333,6 +1352,7 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
     def delete_collection(self, collection_name: str) -> bool:
         """Delete a specific Milvus collection by name."""
         try:
+            _ensure_milvus_default_connection()
             # Convert dashes to underscores (Milvus naming convention)
             collection_name = collection_name.replace("-", "_")
             full_name = f"{self.collection_prefix}_{collection_name}"
@@ -1744,6 +1764,9 @@ class MilvusMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         if active_user_ids is not None:
             for user_id in active_user_ids:
                 expected_resource_ids.add(f"user-memory-{user_id}")
+
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_resource_ids.add(KNOWLEDGE_BASES_COLLECTION)
 
         # WEB_SEARCH_COLLECTION: web-search-{hash} patterns
         # These are NOT in expected set → will be deleted as orphaned ✓
@@ -2284,6 +2307,9 @@ class QdrantMultitenancyDatabaseCleaner(VectorDatabaseCleaner):
         for user_id in active_user_ids:
             expected_tenant_ids.add(f"user-memory-{user_id}")
             memory_tenant_ids_count += 1
+
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_tenant_ids.add(KNOWLEDGE_BASES_COLLECTION)
 
         log.debug(
             f"Built expected tenant_ids: {file_tenant_ids_count} files, {kb_tenant_ids_count} KBs, {memory_tenant_ids_count} memories"
