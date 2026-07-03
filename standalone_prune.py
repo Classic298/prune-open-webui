@@ -51,6 +51,8 @@ try:
         delete_orphaned_channels,
         get_active_file_ids,
         get_all_file_row_ids,
+        get_shared_resource_ids,
+        get_preserved_kb_ids,
         cleanup_dangling_junction_rows,
         _dereference_knowledge_from_models,
         get_kb_user_map,
@@ -315,6 +317,54 @@ Safety Features:
         help="Skip orphaned knowledge base deletion",
     )
     parser.add_argument(
+        "--exempt-shared-orphaned-knowledge-bases",
+        action="store_true",
+        default=True,
+        help="Keep orphaned KBs a living user/group (or public) can still access (default: True)",
+    )
+    parser.add_argument(
+        "--no-exempt-shared-orphaned-knowledge-bases",
+        action="store_false",
+        dest="exempt_shared_orphaned_knowledge_bases",
+        help="Also delete SHARED orphaned knowledge bases",
+    )
+    parser.add_argument(
+        "--exempt-shared-orphaned-models",
+        action="store_true",
+        default=True,
+        help="Keep orphaned models a living principal can still access (default: True)",
+    )
+    parser.add_argument(
+        "--no-exempt-shared-orphaned-models",
+        action="store_false",
+        dest="exempt_shared_orphaned_models",
+        help="Also delete SHARED orphaned models",
+    )
+    parser.add_argument(
+        "--exempt-shared-orphaned-prompts",
+        action="store_true",
+        default=True,
+        help="Keep orphaned prompts a living principal can still access (default: True)",
+    )
+    parser.add_argument(
+        "--no-exempt-shared-orphaned-prompts",
+        action="store_false",
+        dest="exempt_shared_orphaned_prompts",
+        help="Also delete SHARED orphaned prompts",
+    )
+    parser.add_argument(
+        "--exempt-shared-orphaned-tools",
+        action="store_true",
+        default=True,
+        help="Keep orphaned tools a living principal can still access (default: True)",
+    )
+    parser.add_argument(
+        "--no-exempt-shared-orphaned-tools",
+        action="store_false",
+        dest="exempt_shared_orphaned_tools",
+        help="Also delete SHARED orphaned tools",
+    )
+    parser.add_argument(
         "--delete-orphaned-kb-metadata",
         action="store_true",
         default=True,
@@ -519,6 +569,10 @@ def create_prune_form(args) -> PruneDataForm:
         delete_orphaned_skills=args.delete_orphaned_skills,
         delete_orphaned_prompts=args.delete_orphaned_prompts,
         delete_orphaned_knowledge_bases=args.delete_orphaned_knowledge_bases,
+        exempt_shared_orphaned_knowledge_bases=args.exempt_shared_orphaned_knowledge_bases,
+        exempt_shared_orphaned_models=args.exempt_shared_orphaned_models,
+        exempt_shared_orphaned_prompts=args.exempt_shared_orphaned_prompts,
+        exempt_shared_orphaned_tools=args.exempt_shared_orphaned_tools,
         delete_orphaned_kb_metadata=args.delete_orphaned_kb_metadata,
         delete_orphaned_memories=args.delete_orphaned_memories,
         delete_orphaned_models=args.delete_orphaned_models,
@@ -703,13 +757,14 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             log.info("Starting data pruning preview (dry run)")
 
             # Get counts for all enabled operations
-            kb_map = await get_kb_user_map()
             all_users = (await Users.get_users())["users"]
             active_user_ids = {str(user.id) for user in all_users}
-            active_kb_ids = {
-                kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
-            }
-            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+            # Single preservation decision: off-flag and shared exemption
+            # protect KB contents (files, vectors, metadata), not just rows
+            active_kb_ids = await get_preserved_kb_ids(form_data, active_user_ids)
+            active_file_ids = await get_active_file_ids(
+                active_user_ids=active_user_ids, preserved_kb_ids=active_kb_ids
+            )
             # Vector collections follow file ROWS (like storage bytes), so
             # grace-protected and sweep-deferred rows keep their embeddings
             all_file_row_ids = await get_all_file_row_ids()
@@ -894,13 +949,33 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
         log.info(f"Found {len(active_user_ids)} active users")
 
-        kb_map = await get_kb_user_map()
-        active_kb_ids = {
-            kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
-        }
-        log.info(f"Found {len(active_kb_ids)} active knowledge bases")
+        active_kb_ids = await get_preserved_kb_ids(form_data, active_user_ids)
+        log.info(f"Found {len(active_kb_ids)} preserved knowledge bases")
 
-        active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+        active_file_ids = await get_active_file_ids(
+            active_user_ids=active_user_ids, preserved_kb_ids=active_kb_ids
+        )
+
+        # Shared exemptions for the orphan loops below: resources a living
+        # principal can still reach are kept
+        shared_models = (
+            await get_shared_resource_ids("model", active_user_ids)
+            if form_data.delete_orphaned_models
+            and form_data.exempt_shared_orphaned_models
+            else set()
+        )
+        shared_prompts = (
+            await get_shared_resource_ids("prompt", active_user_ids)
+            if form_data.delete_orphaned_prompts
+            and form_data.exempt_shared_orphaned_prompts
+            else set()
+        )
+        shared_tools = (
+            await get_shared_resource_ids("tool", active_user_ids)
+            if form_data.delete_orphaned_tools
+            and form_data.exempt_shared_orphaned_tools
+            else set()
+        )
 
         # Stage 3: Delete orphaned database records
         log.info("Deleting orphaned database records")
@@ -935,7 +1010,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 async for okb_id, okb_uid in stream_rows(
                     db, Knowledge.id, Knowledge.user_id
                 ):
-                    if str(okb_uid) not in active_user_ids:
+                    # Preserved covers live owners, the off-flag and the
+                    # shared exemption; anything outside it is deletable
+                    if str(okb_id) not in active_kb_ids:
                         orphan_kb_ids.append(str(okb_id))
                 for okb_id in orphan_kb_ids:
                     if await asyncio.to_thread(
@@ -982,6 +1059,8 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             async with get_async_db() as db:
                 for tool in await Tools.get_tools(db=db):
                     if str(tool.user_id) not in active_user_ids:
+                        if str(tool.id) in shared_tools:
+                            continue
                         await Tools.delete_tool_by_id(tool.id, db=db)
                         tools_deleted += 1
                         deleted_others += 1
@@ -1039,6 +1118,8 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                     db, Prompt.id, Prompt.command, Prompt.user_id
                 ):
                     if str(prompt_uid) not in active_user_ids:
+                        if str(_pid) in shared_prompts:
+                            continue
                         await Prompts.delete_prompt_by_command(command, db=db)
                         prompts_deleted += 1
                         deleted_others += 1
@@ -1052,6 +1133,8 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             async with get_async_db() as db:
                 for model in await Models.get_all_models(db=db):
                     if str(model.user_id) not in active_user_ids:
+                        if str(model.id) in shared_models:
+                            continue
                         await Models.delete_model_by_id(model.id, db=db)
                         models_deleted += 1
                         deleted_others += 1
@@ -1134,11 +1217,10 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         # get_active_file_ids() that replaced the OOM-prone ORM version.
         log.info("Recomputing preservation sets after deletions")
         active_user_ids = {str(user.id) for user in (await Users.get_users())["users"]}
-        kb_map = await get_kb_user_map()
-        active_kb_ids = {
-            kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
-        }
-        active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+        active_kb_ids = await get_preserved_kb_ids(form_data, active_user_ids)
+        active_file_ids = await get_active_file_ids(
+            active_user_ids=active_user_ids, preserved_kb_ids=active_kb_ids
+        )
         # Vector collections follow file ROWS (like storage bytes): any row
         # that survived stage 3 (referenced, grace-protected, or deferred to
         # the next run) keeps its embeddings.

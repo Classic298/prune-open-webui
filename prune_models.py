@@ -27,6 +27,12 @@ class PruneDataForm(BaseModel):
     delete_knowledge_bases_older_than_days: Optional[int] = None
     knowledge_bases_age_field: str = "created_at"  # 'created_at' or 'updated_at'
     delete_orphaned_chats: bool = True
+    # Shared exemptions: keep orphaned resources that a LIVING principal can
+    # still access (live user grant, existing group grant, or public '*').
+    exempt_shared_orphaned_knowledge_bases: bool = True
+    exempt_shared_orphaned_models: bool = True
+    exempt_shared_orphaned_prompts: bool = True
+    exempt_shared_orphaned_tools: bool = True
     # Skip files younger than this in orphan sweeps: upload and first
     # reference (message send / KB add) are separate requests.
     orphan_file_grace_hours: int = 24
