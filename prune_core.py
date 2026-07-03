@@ -688,6 +688,9 @@ class ChromaDatabaseCleaner(VectorDatabaseCleaner):
         for user_id in active_user_ids or set():
             expected_collections.add(f"user-memory-{user_id}")
 
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_collections.add(KNOWLEDGE_BASES_COLLECTION)
+
         return expected_collections
 
     def _get_collection_mappings(self) -> dict:
@@ -1193,6 +1196,9 @@ class PGVectorDatabaseCleaner(VectorDatabaseCleaner):
         for user_id in active_user_ids or set():
             expected_collections.add(f"user-memory-{user_id}")
 
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_collections.add(KNOWLEDGE_BASES_COLLECTION)
+
         return expected_collections
 
 
@@ -1365,6 +1371,9 @@ class MilvusDatabaseCleaner(VectorDatabaseCleaner):
         # deleted user's memory collection should be treated as orphaned.
         for user_id in active_user_ids or set():
             expected_collections.add(f"user-memory-{user_id}")
+
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_collections.add(KNOWLEDGE_BASES_COLLECTION)
 
         return expected_collections
 
@@ -1895,6 +1904,9 @@ class QdrantDatabaseCleaner(VectorDatabaseCleaner):
         # deleted user's memory collection should be treated as orphaned.
         for user_id in active_user_ids or set():
             expected_collections.add(f"user-memory-{user_id}")
+
+        # Shared KB-metadata collection is pruned per-entry, never wholesale.
+        expected_collections.add(KNOWLEDGE_BASES_COLLECTION)
 
         return expected_collections
 
