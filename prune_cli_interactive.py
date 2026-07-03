@@ -55,6 +55,9 @@ try:
         count_orphaned_uploads,
         count_audio_cache_files,
         get_active_file_ids,
+        get_all_file_row_ids,
+        cleanup_dangling_junction_rows,
+        _dereference_knowledge_from_models,
         get_kb_user_map,
         get_memory_ids_by_user,
         get_all_folders,
@@ -78,8 +81,11 @@ try:
         Chat,
         Chats,
         File,
+        Note as NoteORM,
         Notes,
+        Prompt as PromptORM,
         Prompts,
+        Knowledge as KnowledgeORM,
         Models,
         Knowledges,
         Functions,
@@ -711,7 +717,8 @@ class InteractivePruneUI:
                         self._active_file_ids
                     ),
                     orphaned_vector_collections=self.vector_cleaner.count_orphaned_collections(
-                        self._active_file_ids,
+                        # vectors follow file ROWS, not just references
+                        await get_all_file_row_ids(),
                         self._active_kb_ids,
                         self._active_user_ids,
                     ),
@@ -950,8 +957,9 @@ class InteractivePruneUI:
                     async for (chat_id,) in stream_rows(
                         db, Chat.id, filter_clause=conditions
                     ):
-                        await Chats.delete_chat_by_id(chat_id, db=db)
-                        deleted += 1
+                        # delete_chat_by_id swallows exceptions, returns False
+                        if await Chats.delete_chat_by_id(chat_id, db=db):
+                            deleted += 1
 
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} old chats")
@@ -971,6 +979,13 @@ class InteractivePruneUI:
                     f"[green]✓[/green] Deleted {deleted_kbs} old knowledge bases"
                 )
 
+            # Junction hygiene: SQLite never enforces the declared cascades,
+            # so stale chat_file rows would pin deleted chats' attachments as
+            # active forever. Must run BEFORE the preservation set is built.
+            task = progress.add_task("Cleaning dangling junction rows...", total=None)
+            await cleanup_dangling_junction_rows()
+            progress.update(task, completed=True)
+
             # Stage 2-3: Orphaned data
             task = progress.add_task("Building preservation set...", total=None)
             active_user_ids = {
@@ -983,15 +998,23 @@ class InteractivePruneUI:
             active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
             progress.update(task, completed=True)
 
-            # Delete orphaned files — stream id+user_id only, iterate directly
+            # Delete orphaned files. A file is orphaned only when unreferenced:
+            # a deleted uploader's files can still back another user's live KB
+            # or chat. Fresh uploads get a grace window (upload and first
+            # reference are separate requests).
             task = progress.add_task("Deleting orphaned files...", total=None)
             deleted_files = 0
+            grace_cutoff = int(time.time()) - max(
+                0,
+                int(getattr(self.form_data, "orphan_file_grace_hours", 0) or 0),
+            ) * 3600
             async with get_async_db() as db:
-                async for fid, uid in stream_rows(db, File.id, File.user_id):
-                    if (
-                        str(fid) not in active_file_ids
-                        or str(uid) not in active_user_ids
-                    ):
+                async for fid, _uid, created_at in stream_rows(
+                    db, File.id, File.user_id, File.created_at
+                ):
+                    if created_at is not None and created_at > grace_cutoff:
+                        continue
+                    if str(fid) not in active_file_ids:
                         if await safe_delete_file_by_id(
                             fid, self.vector_cleaner, db=db
                         ):
@@ -1008,14 +1031,29 @@ class InteractivePruneUI:
                 deleted = 0
                 deleted_kb_ids = []
                 async with get_async_db() as db:
-                    for kb in await Knowledges.get_knowledge_bases(db=db):
-                        if str(kb.user_id) not in active_user_ids:
-                            self.vector_cleaner.delete_collection(kb.id)
-                            await Knowledges.delete_knowledge_by_id(kb.id, db=db)
-                            deleted_kb_ids.append(str(kb.id))
+                    # Stream ids — get_knowledge_bases() paginates (limit=30)
+                    orphan_kb_ids = []
+                    async for okb_id, okb_uid in stream_rows(
+                        db, KnowledgeORM.id, KnowledgeORM.user_id
+                    ):
+                        if str(okb_uid) not in active_user_ids:
+                            orphan_kb_ids.append(str(okb_id))
+                    for okb_id in orphan_kb_ids:
+                        # Gate the row deletion on the collection drop, like
+                        # the standalone path: a failed drop leaves the row
+                        # for the next run instead of orphaning the vectors.
+                        if await asyncio.to_thread(
+                            self.vector_cleaner.delete_collection, okb_id
+                        ):
+                            await Knowledges.delete_knowledge_by_id(okb_id, db=db)
+                            deleted_kb_ids.append(okb_id)
                             deleted += 1
                 if deleted_kb_ids:
-                    self.vector_cleaner.delete_kb_metadata(deleted_kb_ids)
+                    await asyncio.to_thread(
+                        self.vector_cleaner.delete_kb_metadata, deleted_kb_ids
+                    )
+                    # Strip deleted KBs from every model's meta.knowledge
+                    await _dereference_knowledge_from_models(set(deleted_kb_ids))
                 progress.update(task, completed=True)
                 console.print(
                     f"[green]✓[/green] Deleted {deleted} orphaned knowledge bases"
@@ -1031,8 +1069,8 @@ class InteractivePruneUI:
                         db, Chat.id, Chat.user_id
                     ):
                         if str(chat_uid) not in active_user_ids:
-                            await Chats.delete_chat_by_id(chat_id, db=db)
-                            deleted += 1
+                            if await Chats.delete_chat_by_id(chat_id, db=db):
+                                deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned chats")
 
@@ -1065,11 +1103,13 @@ class InteractivePruneUI:
                 task = progress.add_task("Deleting orphaned prompts...", total=None)
                 deleted = 0
                 async with get_async_db() as db:
-                    for prompt in await Prompts.get_prompts(db=db):
-                        if str(prompt.user_id) not in active_user_ids:
-                            await Prompts.delete_prompt_by_command(
-                                prompt.command, db=db
-                            )
+                    # Stream raw columns — Prompts.get_prompts() validates every
+                    # row into PromptModel and aborts on legacy rows (NULL tags)
+                    async for _pid, command, prompt_uid in stream_rows(
+                        db, PromptORM.id, PromptORM.command, PromptORM.user_id
+                    ):
+                        if str(prompt_uid) not in active_user_ids:
+                            await Prompts.delete_prompt_by_command(command, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned prompts")
@@ -1091,9 +1131,12 @@ class InteractivePruneUI:
                 task = progress.add_task("Deleting orphaned notes...", total=None)
                 deleted = 0
                 async with get_async_db() as db:
-                    for note in await Notes.get_notes(db=db):
-                        if str(note.user_id) not in active_user_ids:
-                            await Notes.delete_note_by_id(note.id, db=db)
+                    # Stream raw columns — Notes.get_notes() paginates (limit=50)
+                    async for note_id, note_uid in stream_rows(
+                        db, NoteORM.id, NoteORM.user_id
+                    ):
+                        if str(note_uid) not in active_user_ids:
+                            await Notes.delete_note_by_id(note_id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
                 console.print(f"[green]✓[/green] Deleted {deleted} orphaned notes")
@@ -1197,8 +1240,14 @@ class InteractivePruneUI:
             )
 
             task = progress.add_task("Cleaning up vector collections...", total=None)
-            deleted_vector, error = self.vector_cleaner.cleanup_orphaned_collections(
-                active_file_ids, active_kb_ids, active_user_ids
+            # Vector collections follow file ROWS (like storage bytes): any row
+            # that survived the orphan pass keeps its embeddings.
+            all_file_row_ids = await get_all_file_row_ids()
+            deleted_vector, error = await asyncio.to_thread(
+                self.vector_cleaner.cleanup_orphaned_collections,
+                all_file_row_ids,
+                active_kb_ids,
+                active_user_ids,
             )
             progress.update(task, completed=True)
             console.print(

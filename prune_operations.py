@@ -8,6 +8,7 @@ that perform the actual pruning operations, counting, and cleanup.
 import asyncio
 import inspect
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Iterator, Optional, Set, Tuple, Callable, Any
@@ -131,6 +132,7 @@ async def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
 try:
     from prune_imports import (
         Users,
+        Auths,
         Chat,
         ChatMessage,
         Message,
@@ -215,6 +217,57 @@ async def get_kb_user_map() -> dict:
         return result
 
     return await retry_on_db_lock(_scan)
+
+
+async def get_all_file_row_ids() -> Set[str]:
+    """Return the ids of ALL existing file rows.
+
+    Vector collections must follow file rows exactly like storage bytes do: a
+    grace-protected or sweep-deferred row keeps its embeddings, otherwise a
+    file uploaded minutes before a prune would survive as row and bytes but
+    silently lose its vectors. Raises on failure.
+    """
+    async with get_async_db_context() as db:
+        return {str(fid) async for (fid,) in stream_rows(db, File.id)}
+
+
+async def cleanup_dangling_junction_rows() -> int:
+    """Delete chat_file/knowledge_file/channel_file rows whose parent is gone.
+
+    SQLite never enforces the declared ON DELETE CASCADE (Open WebUI does not
+    set PRAGMA foreign_keys), so chat/KB/channel deletions strand junction
+    rows. Stale chat_file rows are worse than cruft: the reference scan would
+    trust them and pin deleted chats' attachments as active forever.
+    """
+    deleted = 0
+    statements = [
+        (
+            "chat_file",
+            "DELETE FROM chat_file WHERE chat_id NOT IN (SELECT id FROM chat)",
+        ),
+        (
+            "knowledge_file",
+            "DELETE FROM knowledge_file WHERE knowledge_id NOT IN (SELECT id FROM knowledge)",
+        ),
+        (
+            "channel_file",
+            "DELETE FROM channel_file WHERE channel_id NOT IN (SELECT id FROM channel)",
+        ),
+    ]
+    for table, stmt in statements:
+        try:
+            async with get_async_db_context() as db:
+                result = await db.execute(text(stmt))
+                await db.commit()
+                if result.rowcount and result.rowcount > 0:
+                    deleted += result.rowcount
+                    log.info(f"Deleted {result.rowcount} dangling {table} rows")
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
+                log.debug(f"{table} hygiene skipped (table missing): {e}")
+            else:
+                raise
+    return deleted
 
 
 # API Compatibility Helpers
@@ -420,7 +473,9 @@ async def delete_old_knowledge_bases(
             ):
                 try:
                     if vector_cleaner is not None:
-                        vector_cleaner.delete_collection(kb_id)
+                        await asyncio.to_thread(
+                            vector_cleaner.delete_collection, kb_id
+                        )
                 except Exception as e:
                     log.warning(
                         f"Failed to delete vector collection for KB {kb_id}: {e}"
@@ -436,7 +491,9 @@ async def delete_old_knowledge_bases(
         # collection (mirrors Open WebUI's own KB deletion). Best-effort.
         try:
             if vector_cleaner is not None:
-                vector_cleaner.delete_kb_metadata(deleted_ids)
+                await asyncio.to_thread(
+                    vector_cleaner.delete_kb_metadata, deleted_ids
+                )
         except Exception as e:
             log.warning(f"Failed to delete KB metadata embeddings: {e}")
         await _dereference_knowledge_from_models(set(deleted_ids))
@@ -484,8 +541,15 @@ async def count_orphaned_records(
             # active_user_ids can exceed SQLite's ~999 parameter limit on
             # large instances.
             orphaned_file_count = 0
-            async for fid, uid in stream_rows(db, File.id, File.user_id):
-                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+            grace_cutoff = int(time.time()) - max(
+                0, int(getattr(form_data, "orphan_file_grace_hours", 0) or 0)
+            ) * 3600
+            async for fid, _uid, created_at in stream_rows(
+                db, File.id, File.user_id, File.created_at
+            ):
+                if created_at is not None and created_at > grace_cutoff:
+                    continue  # freshly uploaded; may not be referenced yet
+                if str(fid) not in active_file_ids:
                     orphaned_file_count += 1
             counts["files"] = orphaned_file_count
 
@@ -514,12 +578,17 @@ async def count_orphaned_records(
 
             for key, table_cls, user_id_col, enabled in _table_flag_map:
                 if enabled and active_user_ids:
-                    result = await db.execute(
-                        select(func.count())
-                        .select_from(table_cls)
-                        .where(not_(user_id_col.in_(active_user_ids)))
-                    )
-                    counts[key] = result.scalar_one_or_none() or 0
+                    # Stream and filter in Python, matching execution exactly:
+                    # SQL IN() binds one parameter per user (breaks past
+                    # SQLite's limit on large instances) and SQL NOT IN never
+                    # counts NULL owners while execution deletes them.
+                    n = 0
+                    async for _rid, row_uid in stream_rows(
+                        db, table_cls.id, user_id_col
+                    ):
+                        if str(row_uid) not in active_user_ids:
+                            n += 1
+                    counts[key] = n
 
             # Count orphaned chat_messages (chat_id references a chat that no longer exists)
             if form_data.delete_orphaned_chat_messages:
@@ -586,37 +655,43 @@ async def count_orphaned_records(
                         else:
                             raise
 
-            # Count orphaned channels (owner no longer active)
+            # Count orphaned channels and channel messages together. Messages
+            # inside channels that will themselves be deleted as orphaned are
+            # included, so preview totals match what execution deletes (the
+            # automation counter got the same treatment).
             if (
                 form_data.delete_orphaned_channels
-                and Channel is not None
-                and active_user_ids
-            ):
+                or form_data.delete_orphaned_channel_messages
+            ) and Channel is not None:
                 try:
-                    result = await db.execute(
-                        select(func.count())
-                        .select_from(Channel)
-                        .where(not_(Channel.user_id.in_(active_user_ids)))
-                    )
-                    counts["channels"] = result.scalar_one_or_none() or 0
-                except _TABLE_MISSING_ERRORS as e:
-                    if _is_table_missing_error(e):
-                        log.debug(f"channel table does not exist: {e}")
-                    else:
-                        raise
+                    all_channel_ids = set()
+                    orphan_channel_ids = set()
+                    async for ch_id, ch_uid in stream_rows(
+                        db, Channel.id, Channel.user_id
+                    ):
+                        all_channel_ids.add(ch_id)
+                        if active_user_ids and str(ch_uid) not in active_user_ids:
+                            orphan_channel_ids.add(ch_id)
+                    if form_data.delete_orphaned_channels:
+                        counts["channels"] = len(orphan_channel_ids)
 
-            # Count orphaned channel messages (channel_id references a missing channel)
-            if form_data.delete_orphaned_channel_messages and Channel is not None:
-                try:
-                    result = await db.execute(
-                        select(func.count(Message.id)).where(
-                            and_(
-                                Message.channel_id.isnot(None),
-                                not_(Message.channel_id.in_(select(Channel.id))),
-                            )
-                        )
-                    )
-                    counts["channel_messages"] = result.scalar_one_or_none() or 0
+                    n = 0
+                    async for _mid, m_ch_id in stream_rows(
+                        db, Message.id, Message.channel_id
+                    ):
+                        if m_ch_id is None:
+                            continue
+                        if (
+                            form_data.delete_orphaned_channel_messages
+                            and m_ch_id not in all_channel_ids
+                        ):
+                            n += 1
+                        elif (
+                            form_data.delete_orphaned_channels
+                            and m_ch_id in orphan_channel_ids
+                        ):
+                            n += 1
+                    counts["channel_messages"] = n
                 except _TABLE_MISSING_ERRORS as e:
                     if _is_table_missing_error(e):
                         log.debug(f"channel/message table does not exist: {e}")
@@ -1007,37 +1082,52 @@ def iter_storage_objects() -> Iterator[Tuple[str, str, Optional[int]]]:
 
 
 async def _get_active_file_paths(active_file_ids: Set[str]) -> Set[str]:
-    """Fetch File.path values for the given active file IDs."""
-    if not active_file_ids:
-        return set()
-    try:
-        async with get_async_db_context() as db:
-            active_paths: Set[str] = set()
-            ids_list = list(active_file_ids)
-            batch_size = 1000
-            for i in range(0, len(ids_list), batch_size):
-                batch = ids_list[i : i + batch_size]
-                result = await db.execute(select(File.path).where(File.id.in_(batch)))
-                for (path,) in result:
-                    if path:
-                        active_paths.add(path)
-            return active_paths
-    except Exception as e:
-        log.error(f"Failed to fetch active file paths: {e}")
-        return set()
+    """Return the storage refs of ALL existing file rows.
+
+    Any file row (referenced or not) protects its storage object; the DB
+    orphan pass removes unreferenced rows first, so whatever still has a row
+    must keep its bytes. Raises on failure: an empty set here would classify
+    EVERY stored object as orphaned and delete it. Paths are also added
+    normalized so a non-canonical UPLOAD_DIR (trailing slash, mixed
+    separators) cannot make every ref mismatch.
+    """
+    async with get_async_db_context() as db:
+        active_paths: Set[str] = set()
+        async for _fid, path in stream_rows(db, File.id, File.path):
+            if path:
+                active_paths.add(path)
+                active_paths.add(os.path.normpath(path))
+                # Basename too: after a DATA_DIR/UPLOAD_DIR migration every
+                # row carries the old prefix; exact-path matching would then
+                # classify ALL local uploads as orphans. Open WebUI's own
+                # local delete/get resolve by basename as well.
+                active_paths.add(os.path.basename(path))
+        return active_paths
 
 
 async def count_orphaned_uploads(active_file_ids: Set[str]) -> int:
     """Count orphaned objects in the configured storage backend (local/S3/GCS/Azure)."""
     active_paths = await _get_active_file_paths(active_file_ids)
-    count = 0
+
+    provider = (STORAGE_PROVIDER or "local").lower()
+
+    def _count() -> int:
+        n = 0
+        for ref, name, _size in iter_storage_objects():
+            if ref in active_paths or name in active_paths:
+                continue
+            # GCS/Azure delete_file cannot round-trip nested blob names and
+            # could target the wrong key; skip them (foreign objects anyway)
+            if provider in ("gcs", "azure") and "/" in name:
+                continue
+            n += 1
+        return n
+
     try:
-        for ref, _name, _size in iter_storage_objects():
-            if ref not in active_paths:
-                count += 1
+        return await asyncio.to_thread(_count)
     except Exception as e:
         log.debug(f"Error counting orphaned storage objects: {e}")
-    return count
+        return 0
 
 
 def count_audio_cache_files(max_age_days: Optional[int]) -> int:
@@ -1151,7 +1241,15 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
         # non-unique — keyset pagination requires a unique cursor column.
         async def scan_chat_files():
             async with get_async_db() as db:
-                result = await db.execute(text("SELECT file_id FROM chat_file"))
+                # JOIN on chat existence: without PRAGMA foreign_keys, SQLite
+                # keeps chat_file rows of deleted chats, and trusting them
+                # would pin those attachments as active forever.
+                result = await db.execute(
+                    text(
+                        "SELECT cf.file_id FROM chat_file cf "
+                        "JOIN chat c ON c.id = cf.chat_id"
+                    )
+                )
                 chat_file_count = 0
                 while True:
                     rows = result.fetchmany(5000)
@@ -1175,6 +1273,34 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
                 log.debug(f"chat_file table does not exist (pre-v0.6.41 schema): {e}")
             else:
                 raise  # Transient DB errors must abort, not produce incomplete sets
+
+        # Scan channel_file junction. Channel uploads get their row at upload
+        # time; the message may not be posted yet, so Message.data alone would
+        # miss them and the upload would be classified orphaned.
+        async def scan_channel_files():
+            async with get_async_db() as db:
+                result = await db.execute(
+                    text(
+                        "SELECT cf.file_id FROM channel_file cf "
+                        "JOIN channel c ON c.id = cf.channel_id"
+                    )
+                )
+                while True:
+                    rows = result.fetchmany(5000)
+                    if not rows:
+                        break
+                    for (file_id,) in rows:
+                        file_id_str = str(file_id) if file_id else None
+                        if file_id_str and file_id_str in all_file_ids:
+                            active_file_ids.add(file_id_str)
+
+        try:
+            await retry_on_db_lock(scan_channel_files)
+        except _TABLE_MISSING_ERRORS as e:
+            if _is_table_missing_error(e):
+                log.debug(f"channel_file table does not exist: {e}")
+            else:
+                raise
 
         # Always scan legacy chat.chat JSON as well — during upgrades from
         # pre-v0.6.41 databases, some file references may exist only in the
@@ -1378,16 +1504,23 @@ async def safe_delete_file_by_id(
                 knowledges = await Knowledges.get_knowledges_by_file_id(
                     file_id, db=session
                 )
+                # Cleaners expose no .delete(); per-point deletion goes through
+                # the unified vector client (absent on NoOp deployments).
+                client = getattr(vector_cleaner, "vector_db_client", None)
                 for kb in knowledges:
+                    if client is None:
+                        break
                     try:
-                        # Delete by file_id filter
-                        vector_cleaner.delete(
-                            collection_name=kb.id, filter={"file_id": file_id}
+                        await asyncio.to_thread(
+                            client.delete,
+                            collection_name=kb.id,
+                            filter={"file_id": file_id},
                         )
-                        # Also delete by hash if available (covers hash-based lookups)
                         if file_record.hash:
-                            vector_cleaner.delete(
-                                collection_name=kb.id, filter={"hash": file_record.hash}
+                            await asyncio.to_thread(
+                                client.delete,
+                                collection_name=kb.id,
+                                filter={"hash": file_record.hash},
                             )
                     except Exception as e:
                         log.debug(f"KB embedding cleanup for {kb.id}: {e}")
@@ -1396,7 +1529,7 @@ async def safe_delete_file_by_id(
 
             # Delete standalone file vector collection
             collection_name = f"file-{file_id}"
-            vector_cleaner.delete_collection(collection_name)
+            await asyncio.to_thread(vector_cleaner.delete_collection, collection_name)
 
             # Delete from DB - CASCADE handles chat_file, channel_file, knowledge_file
             await Files.delete_file_by_id(file_id, db=session)
@@ -1404,7 +1537,7 @@ async def safe_delete_file_by_id(
             # Delete physical file from storage
             if file_record.path:
                 try:
-                    Storage.delete_file(file_record.path)
+                    await asyncio.to_thread(Storage.delete_file, file_record.path)
                 except Exception as e:
                     log.debug(f"Error deleting physical file {file_record.path}: {e}")
 
@@ -1461,10 +1594,23 @@ async def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
     active_paths = await _get_active_file_paths(active_file_ids)
     deleted_count = 0
 
+    provider = (STORAGE_PROVIDER or "local").lower()
+
+    def _list_orphans():
+        return [
+            (ref, name)
+            for ref, name, _size in iter_storage_objects()
+            if ref not in active_paths
+            and name not in active_paths
+            # GCS/Azure delete_file extracts the key naively (first segment /
+            # basename) and would delete a DIFFERENT, possibly live blob for
+            # nested names; never touch those.
+            and not (provider in ("gcs", "azure") and "/" in name)
+        ]
+
     try:
-        for ref, name, _size in iter_storage_objects():
-            if ref in active_paths:
-                continue
+        orphans = await asyncio.to_thread(_list_orphans)
+        for ref, name in orphans:
             try:
                 await asyncio.to_thread(Storage.delete_file, ref)
                 deleted_count += 1
@@ -1488,12 +1634,14 @@ async def delete_inactive_users(
     """
     Delete users who have been inactive for the specified number of days.
 
-    If vector_cleaner is provided, also cleans up user files (embeddings, physical storage)
-    before deleting the user.
+    The user's files are deliberately NOT deleted here: files follow the
+    unreferenced-only rule in the orphan sweep, so anything the user uploaded
+    into another user's live KB, chat or channel survives, while their own
+    now-unreferenced files fall in the orphan pass of the same run.
 
     Args:
         inactive_days: Number of days of inactivity before deletion
-        vector_cleaner: Optional vector database cleaner for file cleanup
+        vector_cleaner: Unused; kept for call-site compatibility
         exempt_admin: Whether to exempt admin users from deletion
         exempt_pending: Whether to exempt pending users from deletion
 
@@ -1504,7 +1652,6 @@ async def delete_inactive_users(
 
     cutoff_time = int(time.time()) - (inactive_days * 86400)
     deleted_count = 0
-    total_files_deleted = 0
 
     try:
         users_to_delete = []
@@ -1523,44 +1670,31 @@ async def delete_inactive_users(
             if user.last_active_at < cutoff_time:
                 users_to_delete.append(user)
 
-        # Delete inactive users with shared database session
+        # No savepoint: the OWUI managers commit their own sessions in the
+        # default (non-session-sharing) configuration, so a savepoint here
+        # would contain no work and only feign atomicity.
         async with get_async_db() as db:
             for user in users_to_delete:
                 try:
-                    # Track files per-user so we only count them if the
-                    # savepoint commits successfully.
-                    user_files_deleted = 0
+                    # Delete user's automations and their runs
+                    await delete_user_automations(user.id, db=db)
 
-                    # Use a savepoint so a per-user failure only rolls back
-                    # that user's changes, not earlier successful deletions.
-                    async with db.begin_nested():
-                        # Delete user's files first (if vector_cleaner provided)
-                        # This ensures proper cleanup of embeddings, physical storage, etc.
-                        if vector_cleaner is not None:
-                            user_files_deleted = await delete_user_files(
-                                user.id, vector_cleaner, db=db
-                            )
-
-                        # Delete user's automations and their runs
-                        await delete_user_automations(user.id, db=db)
-
-                        # Delete the user - CASCADE handles remaining associations
-                        await Users.delete_user_by_id(user.id, db=db)
-
-                    # Savepoint committed — safe to count
-                    total_files_deleted += user_files_deleted
-                    deleted_count += 1
-                    log.info(
-                        f"Deleted inactive user: {user.email} (last active: {user.last_active_at})"
-                    )
+                    # Auths.delete_auth_by_id wraps Users.delete_user_by_id AND
+                    # removes the auth credential row, matching Open WebUI's
+                    # own admin delete route; plain Users.delete_user_by_id
+                    # would leave email + password hash behind forever.
+                    if await Auths.delete_auth_by_id(user.id, db=db):
+                        deleted_count += 1
+                        log.info(
+                            f"Deleted inactive user: {user.email} (last active: {user.last_active_at})"
+                        )
+                    else:
+                        log.error(f"Failed to delete user {user.id}")
                 except Exception as e:
                     log.error(f"Failed to delete user {user.id}: {e}")
 
     except Exception as e:
         log.error(f"Error during inactive user deletion: {e}")
-
-    if total_files_deleted > 0:
-        log.info(f"Total files deleted from inactive users: {total_files_deleted}")
 
     return deleted_count
 
