@@ -131,6 +131,7 @@ async def stream_rows(db, *columns, filter_clause=None, batch_size=5000):
 # Import Open WebUI modules using compatibility layer (handles pip/docker/git installs)
 try:
     from prune_imports import (
+        User,
         Users,
         Auths,
         Chat,
@@ -320,15 +321,29 @@ async def count_inactive_users(
     count = 0
 
     try:
-        if all_users is None:
-            all_users = (await Users.get_users())["users"]
-        for user in all_users:
-            if exempt_admin and user.role == "admin":
-                continue
-            if exempt_pending and user.role == "pending":
-                continue
-            if user.last_active_at < cutoff_time:
-                count += 1
+        if all_users is not None:
+            for user in all_users:
+                if exempt_admin and user.role == "admin":
+                    continue
+                if exempt_pending and user.role == "pending":
+                    continue
+                if user.last_active_at < cutoff_time:
+                    count += 1
+            return count
+
+        # No pre-fetched list: SQL COUNT instead of materializing every user
+        # row (this path runs on event-triggered rechecks in server contexts).
+        # NULL roles must stay counted, matching the Python filter above.
+        conditions = [User.last_active_at < cutoff_time]
+        if exempt_admin:
+            conditions.append(or_(User.role != "admin", User.role == None))
+        if exempt_pending:
+            conditions.append(or_(User.role != "pending", User.role == None))
+        async with get_async_db_context() as db:
+            result = await db.execute(
+                select(func.count(User.id)).where(and_(*conditions))
+            )
+            return result.scalar_one_or_none() or 0
     except Exception as e:
         log.debug(f"Error counting inactive users: {e}")
 
@@ -1463,6 +1478,35 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
         else:
             log.debug("Model.params/meta attributes not present — skipping model scan")
 
+        # Scan notes for file attachments. The notes editor stores them in
+        # note.data.files as {"id": ...} entries, which the collector detects.
+        if hasattr(Note, "data"):
+
+            async def scan_notes():
+                async with get_async_db() as db:
+                    async for note_id, note_data in stream_rows(
+                        db, Note.id, Note.data, batch_size=100
+                    ):
+                        if note_data and isinstance(note_data, dict):
+                            try:
+                                collect_file_ids_from_dict(
+                                    note_data, active_file_ids, all_file_ids
+                                )
+                            except Exception as e:
+                                log.debug(
+                                    f"Error processing note {note_id} data: {e}"
+                                )
+
+            try:
+                await retry_on_db_lock(scan_notes)
+            except _TABLE_MISSING_ERRORS as e:
+                if _is_table_missing_error(e):
+                    log.debug(f"Note scan skipped (table missing): {e}")
+                else:
+                    raise
+        else:
+            log.debug("Note.data attribute not present — skipping note scan")
+
     except Exception:
         # Do NOT return an empty set — callers use this for deletion decisions.
         # An empty preservation set would mark ALL files as orphaned.
@@ -1752,9 +1796,13 @@ async def delete_user_automations(
             )
             deleted_count = result.rowcount
 
-            # Only commit if we own the session; let the caller commit otherwise
-            if owns_session:
-                await session.commit()
+            # Commit unconditionally: get_async_db_context only reuses a passed
+            # session when DATABASE_ENABLE_SESSION_SHARING is on (off by
+            # default), so with a borrowed session this block may hold its OWN
+            # session and skipping the commit silently rolls back the deletes
+            # while the success log still prints. Committing a caller's session
+            # is safe; OWUI managers commit borrowed sessions too.
+            await session.commit()
 
             if deleted_count > 0:
                 log.info(
