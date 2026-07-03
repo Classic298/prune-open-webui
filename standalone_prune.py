@@ -50,6 +50,9 @@ try:
         delete_orphaned_channel_messages,
         delete_orphaned_channels,
         get_active_file_ids,
+        get_all_file_row_ids,
+        cleanup_dangling_junction_rows,
+        _dereference_knowledge_from_models,
         get_kb_user_map,
         get_memory_ids_by_user,
         get_all_folders,
@@ -134,7 +137,7 @@ Examples:
   %(prog)s --days 90 --delete-inactive-users-days 180 --run-vacuum
 
   # Clean orphaned data only (no age-based deletion)
-  %(prog)s --delete-orphaned-chats --delete-orphaned-files
+  %(prog)s --delete-orphaned-chats --delete-orphaned-prompts
 
   # Audio cache cleanup
   %(prog)s --audio-cache-max-age-days 30
@@ -707,6 +710,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
             }
             active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+            # Vector collections follow file ROWS (like storage bytes), so
+            # grace-protected and sweep-deferred rows keep their embeddings
+            all_file_row_ids = await get_all_file_row_ids()
 
             orphaned_counts = await count_orphaned_records(
                 form_data, active_file_ids, active_user_ids
@@ -742,7 +748,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 orphaned_uploads=await count_orphaned_uploads(active_file_ids),
                 orphaned_vector_collections=await asyncio.to_thread(
                     vector_cleaner.count_orphaned_collections,
-                    active_file_ids,
+                    all_file_row_ids,
                     active_kb_ids,
                     active_user_ids,
                 ),
@@ -840,8 +846,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 async for (chat_id,) in stream_rows(
                     db, Chat.id, filter_clause=conditions
                 ):
-                    await Chats.delete_chat_by_id(chat_id, db=db)
-                    deleted += 1
+                    # delete_chat_by_id swallows exceptions and returns False
+                    if await Chats.delete_chat_by_id(chat_id, db=db):
+                        deleted += 1
                 if deleted > 0:
                     log.info(
                         f"Deleting {deleted} old chats (older than {form_data.days} days)"
@@ -874,6 +881,12 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 )
         else:
             log.info("Skipping age-based knowledge base deletion (disabled)")
+
+        # Stage 1c: junction hygiene. SQLite never enforces the declared
+        # cascades, so deleted chats/KBs/channels strand junction rows; stale
+        # chat_file rows would pin deleted chats' attachments as active forever.
+        # Must run BEFORE the preservation set is built.
+        await cleanup_dangling_junction_rows()
 
         # Stage 2: Build preservation set
         log.info("Building preservation set")
@@ -937,6 +950,10 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
                 await asyncio.to_thread(
                     vector_cleaner.delete_kb_metadata, deleted_kb_ids
                 )
+                # Strip the deleted KBs from every model's meta.knowledge, as
+                # the age-based KB path already does — ghost-owned KBs can be
+                # attached to active users' models.
+                await _dereference_knowledge_from_models(set(deleted_kb_ids))
 
             if deleted_kbs > 0:
                 log.info(f"Deleted {deleted_kbs} orphaned knowledge bases")
@@ -952,9 +969,9 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             async with get_async_db() as db:
                 async for chat_id, chat_uid in stream_rows(db, Chat.id, Chat.user_id):
                     if str(chat_uid) not in active_user_ids:
-                        await Chats.delete_chat_by_id(chat_id, db=db)
-                        chats_deleted += 1
-                        deleted_others += 1
+                        if await Chats.delete_chat_by_id(chat_id, db=db):
+                            chats_deleted += 1
+                            deleted_others += 1
             if chats_deleted > 0:
                 log.info(f"Deleted {chats_deleted} orphaned chats")
         else:
@@ -1122,6 +1139,10 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
             kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
         }
         active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+        # Vector collections follow file ROWS (like storage bytes): any row
+        # that survived stage 3 (referenced, grace-protected, or deferred to
+        # the next run) keeps its embeddings.
+        all_file_row_ids = await get_all_file_row_ids()
 
         log.info("Cleaning up orphaned physical files")
 
@@ -1142,7 +1163,7 @@ async def run_prune(form_data: PruneDataForm, export_preview_path: str = None):
         warnings = []
         deleted_vector_count, vector_error = await asyncio.to_thread(
             vector_cleaner.cleanup_orphaned_collections,
-            active_file_ids,
+            all_file_row_ids,
             active_kb_ids,
             active_user_ids,
         )

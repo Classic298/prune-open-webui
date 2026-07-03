@@ -170,6 +170,13 @@ UUID_PATTERN = re.compile(
     r"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
 )
 
+# URL-style file references: legacy generated images are stored in chat JSON as
+# {"type": "image", "url": "/api/v1/files/{id}/content"} with no "id" key, so
+# id-field matching alone misses them and live chats would lose their images.
+URL_FILE_REF_PATTERN = re.compile(
+    r"/api/v1/files/([a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12})"
+)
+
 
 def collect_file_ids_from_dict(
     obj, out: Set[str], valid_ids: Set[str], _depth: int = 0
@@ -213,6 +220,14 @@ def collect_file_ids_from_dict(
                 for fid in fid_array:
                     if isinstance(fid, str) and fid in valid_ids:
                         out.add(fid)
+
+        # Check URL-style references (legacy generated images carry only a url)
+        for field_name in ["url", "src"]:
+            url_val = obj.get(field_name)
+            if isinstance(url_val, str) and "/api/v1/files/" in url_val:
+                for match in URL_FILE_REF_PATTERN.findall(url_val):
+                    if match in valid_ids:
+                        out.add(match)
 
         # Recurse into all dict values
         for value in obj.values():

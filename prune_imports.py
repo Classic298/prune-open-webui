@@ -109,6 +109,7 @@ if _import_strategy is None:
 if _import_strategy == "pip" or _import_strategy == "backend_path":
     # Import from open_webui.* (pip or backend in path)
     from open_webui.models.users import Users
+    from open_webui.models.auths import Auths
     from open_webui.models.chats import Chat, Chats, ChatFile
     from open_webui.models.chat_messages import ChatMessage
     from open_webui.models.messages import Message, MessageReaction, Messages
@@ -178,6 +179,7 @@ if _import_strategy == "pip" or _import_strategy == "backend_path":
 elif _import_strategy == "git":
     # Import from backend.open_webui.* (git installation)
     from backend.open_webui.models.users import Users
+    from backend.open_webui.models.auths import Auths
     from backend.open_webui.models.chats import Chat, Chats, ChatFile
     from backend.open_webui.models.chat_messages import ChatMessage
     from backend.open_webui.models.messages import Message, MessageReaction, Messages
@@ -266,6 +268,7 @@ def get_sync_engine():
 # Export all for easy importing
 __all__ = [
     "Users",
+    "Auths",
     "Chat",
     "Chats",
     "ChatFile",
