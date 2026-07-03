@@ -407,13 +407,16 @@ A fourth group (**Execution & Output**) controls preview, execution, optimizatio
 | `--delete-orphaned-skills` | flag | False | — | Clean orphaned skills |
 | `--delete-orphaned-channels` | flag | False | — | Delete channels owned by deleted users (with their messages/files) |
 | `--delete-orphaned-channel-messages` | flag | True | `--no-delete-orphaned-channel-messages` | Delete channel messages whose channel no longer exists |
+| `--orphan-file-grace-hours N` | int | 24 | — | Never treat files younger than N hours as orphaned (`0` disables the grace window) |
+
+**How orphaned files are determined:** a file is deleted only when **nothing references it** — no knowledge base, chat, folder, channel message or model. Who uploaded it plays no role: a file uploaded by a since-deleted user into another user's live knowledge base is still in use and is kept. Files younger than the grace window are always kept, because uploading a file and referencing it (sending the message, adding it to a KB) are two separate requests in Open WebUI — without the grace window, a prune running in that gap could delete an upload the user is still attaching.
 
 ### 2. Age-Based Deletion (bounded blast radius)
 
 | Option | Type | Default | Negate with | Description |
 |--------|------|---------|-------------|-------------|
 | `--days N` | int | None | — | Delete chats older than N days (by last-updated) |
-| `--exempt-archived-chats` | flag | False | — | Keep archived chats even if old |
+| `--exempt-archived-chats` | flag | True | `--no-exempt-archived-chats` | Keep archived chats even if old |
 | `--exempt-pinned-chats` | flag | False | — | Keep pinned chats even if old |
 | `--exempt-chats-in-folders` | flag | False | — | Keep chats in folders even if old |
 | `--delete-inactive-users-days N` | int | None | — | Delete users inactive N+ days (cascades all their data) |
@@ -693,7 +696,7 @@ If operations are very slow:
 - Chats/tools/skills/automations/prompts/etc. from deleted users
 - Automation runs from deleted automations
 - Chat messages (analytics metadata) from deleted chats — see note below
-- Files not referenced in chats/KBs (storage objects are deleted from the configured backend — local, S3, GCS, or Azure)
+- Files referenced by nothing (no chat, knowledge base, folder, channel message, or model — regardless of who uploaded them) and older than the upload grace window (`--orphan-file-grace-hours`, default 24h). Storage objects are deleted from the configured backend — local, S3, GCS, or Azure
 - Vector collections for deleted files/KBs
 - Knowledge base search-metadata embeddings (in the shared `knowledge-bases` collection) whose knowledge base no longer exists. Open WebUI stores one small embedding per KB (its name and description) for semantic search across knowledge bases; this removes the leftover entry when a KB was deleted outside the tool or by an older version. Toggle with `--delete-orphaned-kb-metadata` / `--no-delete-orphaned-kb-metadata`.
 - Memories (in each active user's `user-memory-{id}` collection) whose memory row no longer exists. When a user deletes an individual memory, the vector point can be left behind and keep getting injected into chat context via RAG; this reconciles each active user's memory collection against the `memory` table and removes the orphans. Toggle with `--delete-orphaned-memories` / `--no-delete-orphaned-memories`.
