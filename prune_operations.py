@@ -220,6 +220,81 @@ async def get_kb_user_map() -> dict:
     return await retry_on_db_lock(_scan)
 
 
+async def get_shared_resource_ids(
+    resource_type: str, active_user_ids: Set[str]
+) -> Set[str]:
+    """Resource ids of the given type that a LIVING principal can still reach.
+
+    A grant keeps a resource shared when its principal is a live user, an
+    existing group (groups outlive their members), or the public '*' wildcard.
+    Grants pointing only at deleted users or vanished groups do not count, so
+    a once-shared resource nobody alive can open is treated as private.
+    Raises on unexpected errors: failing open here would delete shared data.
+    """
+    if AccessGrant is None:
+        return set()
+    try:
+        async with get_async_db_context() as db:
+            live_group_ids = set()
+            try:
+                result = await db.execute(text('SELECT id FROM "group"'))
+                live_group_ids = {str(row[0]) for row in result.fetchall()}
+            except _TABLE_MISSING_ERRORS as e:
+                if not _is_table_missing_error(e):
+                    raise
+
+            shared: Set[str] = set()
+            result = await db.execute(
+                text(
+                    "SELECT resource_id, principal_type, principal_id "
+                    "FROM access_grant WHERE resource_type = :rt"
+                ),
+                {"rt": resource_type},
+            )
+            for rid, ptype, pid in result.fetchall():
+                pid_str = str(pid)
+                if ptype == "user" and (pid_str == "*" or pid_str in active_user_ids):
+                    shared.add(str(rid))
+                elif ptype == "group" and pid_str in live_group_ids:
+                    shared.add(str(rid))
+            return shared
+    except _TABLE_MISSING_ERRORS as e:
+        if _is_table_missing_error(e):
+            log.debug(f"access_grant table does not exist: {e}")
+            return set()
+        raise
+
+
+async def get_preserved_kb_ids(form_data, active_user_ids: Set[str]) -> Set[str]:
+    """The single KB preservation decision every consumer follows.
+
+    Preserved = owned by a live user, plus ALL ghost KBs when orphaned-KB
+    deletion is disabled (the off-flag protects contents, not just the row),
+    plus ghost KBs a living principal can still access when the shared
+    exemption is on. File references, vector collections, metadata embeddings
+    and the deletion loop all consume this one set.
+    """
+    kb_map = await get_kb_user_map()
+    preserved = {kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids}
+    ghost = set(kb_map) - preserved
+
+    if not getattr(form_data, "delete_orphaned_knowledge_bases", True):
+        return set(kb_map)
+
+    if ghost and getattr(form_data, "exempt_shared_orphaned_knowledge_bases", True):
+        shared = await get_shared_resource_ids("knowledge", active_user_ids)
+        kept = ghost & shared
+        if kept:
+            sample = sorted(kept)[:10]
+            log.info(
+                f"Keeping {len(kept)} ownerless SHARED knowledge bases "
+                f"(exempt_shared_orphaned_knowledge_bases): {sample}"
+                f"{' ...' if len(kept) > 10 else ''}"
+            )
+        preserved |= kept
+    return preserved
+
+
 async def get_all_file_row_ids() -> Set[str]:
     """Return the ids of ALL existing file rows.
 
@@ -591,17 +666,55 @@ async def count_orphaned_records(
                 ("folders", Folder, Folder.user_id, form_data.delete_orphaned_folders),
             ]
 
+            # Shared exemptions: an orphaned resource a LIVING principal can
+            # still reach is kept, so it must not be counted either.
+            _shared_exempt = {}
+            for cnt_key, rtype, enabled_flag, exempt_flag in (
+                (
+                    "knowledge_bases",
+                    "knowledge",
+                    form_data.delete_orphaned_knowledge_bases,
+                    getattr(form_data, "exempt_shared_orphaned_knowledge_bases", True),
+                ),
+                (
+                    "models",
+                    "model",
+                    form_data.delete_orphaned_models,
+                    getattr(form_data, "exempt_shared_orphaned_models", True),
+                ),
+                (
+                    "prompts",
+                    "prompt",
+                    form_data.delete_orphaned_prompts,
+                    getattr(form_data, "exempt_shared_orphaned_prompts", True),
+                ),
+                (
+                    "tools",
+                    "tool",
+                    form_data.delete_orphaned_tools,
+                    getattr(form_data, "exempt_shared_orphaned_tools", True),
+                ),
+            ):
+                if enabled_flag and exempt_flag and active_user_ids:
+                    _shared_exempt[cnt_key] = await get_shared_resource_ids(
+                        rtype, active_user_ids
+                    )
+
             for key, table_cls, user_id_col, enabled in _table_flag_map:
                 if enabled and active_user_ids:
                     # Stream and filter in Python, matching execution exactly:
                     # SQL IN() binds one parameter per user (breaks past
                     # SQLite's limit on large instances) and SQL NOT IN never
                     # counts NULL owners while execution deletes them.
+                    exempt_ids = _shared_exempt.get(key, set())
                     n = 0
                     async for _rid, row_uid in stream_rows(
                         db, table_cls.id, user_id_col
                     ):
-                        if str(row_uid) not in active_user_ids:
+                        if (
+                            str(row_uid) not in active_user_ids
+                            and str(_rid) not in exempt_ids
+                        ):
                             n += 1
                     counts[key] = n
 
@@ -1172,7 +1285,9 @@ def count_audio_cache_files(max_age_days: Optional[int]) -> int:
     return count
 
 
-async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set[str]:
+async def get_active_file_ids(
+    knowledge_bases=None, active_user_ids=None, preserved_kb_ids=None
+) -> Set[str]:
     """
     Get all file IDs that are actively referenced by knowledge bases, chats, folders, messages, and models.
 
@@ -1182,6 +1297,9 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
     Args:
         knowledge_bases: Deprecated, ignored.  Kept for call-site compatibility.
         active_user_ids: Optional set of active user IDs to filter knowledge bases
+        preserved_kb_ids: When given, the exact KB set whose file references
+            count (overrides the ownership filter); pass get_preserved_kb_ids()
+            so exemptions and the off-flag protect KB contents consistently.
     """
     active_file_ids = set()
 
@@ -1207,11 +1325,13 @@ async def get_active_file_ids(knowledge_bases=None, active_user_ids=None) -> Set
         kb_user_map = await get_kb_user_map()
         active_kb_ids = set()
         for kb_id, user_id in kb_user_map.items():
-            # CRITICAL: Skip KBs owned by inactive/deleted users to maintain
-            # consistency with active_kb_ids filtering. This prevents false positives
-            # where files are considered "active" but their KB is marked as orphaned,
-            # leading to incorrectly deleted vector collections.
-            if active_user_ids is None or user_id in active_user_ids:
+            # CRITICAL: only preserved/active KBs may keep files alive; a KB
+            # slated for deletion must not protect its contents, and a KB the
+            # preservation decision keeps (off-flag, shared exemption) must.
+            if preserved_kb_ids is not None:
+                if kb_id in preserved_kb_ids:
+                    active_kb_ids.add(kb_id)
+            elif active_user_ids is None or user_id in active_user_ids:
                 active_kb_ids.add(kb_id)
         log.debug(f"Found {len(active_kb_ids)} active knowledge bases")
 

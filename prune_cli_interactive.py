@@ -56,6 +56,8 @@ try:
         count_audio_cache_files,
         get_active_file_ids,
         get_all_file_row_ids,
+        get_shared_resource_ids,
+        get_preserved_kb_ids,
         cleanup_dangling_junction_rows,
         _dereference_knowledge_from_models,
         get_kb_user_map,
@@ -670,16 +672,16 @@ class InteractivePruneUI:
                 # Use lightweight SQL instead of Knowledges.get_knowledge_bases()
                 # which eager-loads File ORM objects through relationships, pulling
                 # hundreds of MB of JSONB into memory on large databases.
-                kb_map = await get_kb_user_map()
                 all_users = (await Users.get_users())["users"]
                 self._active_user_ids = {str(user.id) for user in all_users}
-                self._active_kb_ids = {
-                    kb_id
-                    for kb_id, uid in kb_map.items()
-                    if uid in self._active_user_ids
-                }
+                # Single preservation decision (off-flag + shared exemption
+                # protect KB contents, not just rows)
+                self._active_kb_ids = await get_preserved_kb_ids(
+                    self.form_data, self._active_user_ids
+                )
                 self._active_file_ids = await get_active_file_ids(
-                    active_user_ids=self._active_user_ids
+                    active_user_ids=self._active_user_ids,
+                    preserved_kb_ids=self._active_kb_ids,
                 )
 
                 orphaned_counts = await count_orphaned_records(
@@ -991,11 +993,31 @@ class InteractivePruneUI:
             active_user_ids = {
                 str(user.id) for user in (await Users.get_users())["users"]
             }
-            kb_map = await get_kb_user_map()
-            active_kb_ids = {
-                kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
-            }
-            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+            # Single preservation decision (off-flag + shared exemption
+            # protect KB contents, not just rows)
+            active_kb_ids = await get_preserved_kb_ids(self.form_data, active_user_ids)
+            active_file_ids = await get_active_file_ids(
+                active_user_ids=active_user_ids, preserved_kb_ids=active_kb_ids
+            )
+            # Shared exemptions for the orphan loops below
+            shared_models = (
+                await get_shared_resource_ids("model", active_user_ids)
+                if self.form_data.delete_orphaned_models
+                and self.form_data.exempt_shared_orphaned_models
+                else set()
+            )
+            shared_prompts = (
+                await get_shared_resource_ids("prompt", active_user_ids)
+                if self.form_data.delete_orphaned_prompts
+                and self.form_data.exempt_shared_orphaned_prompts
+                else set()
+            )
+            shared_tools = (
+                await get_shared_resource_ids("tool", active_user_ids)
+                if self.form_data.delete_orphaned_tools
+                and self.form_data.exempt_shared_orphaned_tools
+                else set()
+            )
             progress.update(task, completed=True)
 
             # Delete orphaned files. A file is orphaned only when unreferenced:
@@ -1036,7 +1058,9 @@ class InteractivePruneUI:
                     async for okb_id, okb_uid in stream_rows(
                         db, KnowledgeORM.id, KnowledgeORM.user_id
                     ):
-                        if str(okb_uid) not in active_user_ids:
+                        # Preserved covers live owners, the off-flag and the
+                        # shared exemption; anything outside it is deletable
+                        if str(okb_id) not in active_kb_ids:
                             orphan_kb_ids.append(str(okb_id))
                     for okb_id in orphan_kb_ids:
                         # Gate the row deletion on the collection drop, like
@@ -1081,6 +1105,8 @@ class InteractivePruneUI:
                 async with get_async_db() as db:
                     for tool in await Tools.get_tools(db=db):
                         if str(tool.user_id) not in active_user_ids:
+                            if str(tool.id) in shared_tools:
+                                continue
                             await Tools.delete_tool_by_id(tool.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -1109,6 +1135,8 @@ class InteractivePruneUI:
                         db, PromptORM.id, PromptORM.command, PromptORM.user_id
                     ):
                         if str(prompt_uid) not in active_user_ids:
+                            if str(_pid) in shared_prompts:
+                                continue
                             await Prompts.delete_prompt_by_command(command, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -1121,6 +1149,8 @@ class InteractivePruneUI:
                 async with get_async_db() as db:
                     for model in await Models.get_all_models(db=db):
                         if str(model.user_id) not in active_user_ids:
+                            if str(model.id) in shared_models:
+                                continue
                             await Models.delete_model_by_id(model.id, db=db)
                             deleted += 1
                 progress.update(task, completed=True)
@@ -1225,11 +1255,10 @@ class InteractivePruneUI:
             active_user_ids = {
                 str(user.id) for user in (await Users.get_users())["users"]
             }
-            kb_map = await get_kb_user_map()
-            active_kb_ids = {
-                kb_id for kb_id, uid in kb_map.items() if uid in active_user_ids
-            }
-            active_file_ids = await get_active_file_ids(active_user_ids=active_user_ids)
+            active_kb_ids = await get_preserved_kb_ids(self.form_data, active_user_ids)
+            active_file_ids = await get_active_file_ids(
+                active_user_ids=active_user_ids, preserved_kb_ids=active_kb_ids
+            )
             progress.update(task, completed=True)
 
             task = progress.add_task("Cleaning up orphaned uploads...", total=None)
