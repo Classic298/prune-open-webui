@@ -8,6 +8,7 @@ that perform the actual pruning operations, counting, and cleanup.
 import asyncio
 import inspect
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Iterator, Optional, Set, Tuple, Callable, Any
@@ -420,7 +421,9 @@ async def delete_old_knowledge_bases(
             ):
                 try:
                     if vector_cleaner is not None:
-                        vector_cleaner.delete_collection(kb_id)
+                        await asyncio.to_thread(
+                            vector_cleaner.delete_collection, kb_id
+                        )
                 except Exception as e:
                     log.warning(
                         f"Failed to delete vector collection for KB {kb_id}: {e}"
@@ -436,7 +439,9 @@ async def delete_old_knowledge_bases(
         # collection (mirrors Open WebUI's own KB deletion). Best-effort.
         try:
             if vector_cleaner is not None:
-                vector_cleaner.delete_kb_metadata(deleted_ids)
+                await asyncio.to_thread(
+                    vector_cleaner.delete_kb_metadata, deleted_ids
+                )
         except Exception as e:
             log.warning(f"Failed to delete KB metadata embeddings: {e}")
         await _dereference_knowledge_from_models(set(deleted_ids))
@@ -484,8 +489,15 @@ async def count_orphaned_records(
             # active_user_ids can exceed SQLite's ~999 parameter limit on
             # large instances.
             orphaned_file_count = 0
-            async for fid, uid in stream_rows(db, File.id, File.user_id):
-                if str(fid) not in active_file_ids or str(uid) not in active_user_ids:
+            grace_cutoff = int(time.time()) - max(
+                0, int(getattr(form_data, "orphan_file_grace_hours", 0) or 0)
+            ) * 3600
+            async for fid, _uid, created_at in stream_rows(
+                db, File.id, File.user_id, File.created_at
+            ):
+                if created_at is not None and created_at > grace_cutoff:
+                    continue  # freshly uploaded; may not be referenced yet
+                if str(fid) not in active_file_ids:
                     orphaned_file_count += 1
             counts["files"] = orphaned_file_count
 
@@ -1007,37 +1019,40 @@ def iter_storage_objects() -> Iterator[Tuple[str, str, Optional[int]]]:
 
 
 async def _get_active_file_paths(active_file_ids: Set[str]) -> Set[str]:
-    """Fetch File.path values for the given active file IDs."""
-    if not active_file_ids:
-        return set()
-    try:
-        async with get_async_db_context() as db:
-            active_paths: Set[str] = set()
-            ids_list = list(active_file_ids)
-            batch_size = 1000
-            for i in range(0, len(ids_list), batch_size):
-                batch = ids_list[i : i + batch_size]
-                result = await db.execute(select(File.path).where(File.id.in_(batch)))
-                for (path,) in result:
-                    if path:
-                        active_paths.add(path)
-            return active_paths
-    except Exception as e:
-        log.error(f"Failed to fetch active file paths: {e}")
-        return set()
+    """Return the storage refs of ALL existing file rows.
+
+    Any file row (referenced or not) protects its storage object; the DB
+    orphan pass removes unreferenced rows first, so whatever still has a row
+    must keep its bytes. Raises on failure: an empty set here would classify
+    EVERY stored object as orphaned and delete it. Paths are also added
+    normalized so a non-canonical UPLOAD_DIR (trailing slash, mixed
+    separators) cannot make every ref mismatch.
+    """
+    async with get_async_db_context() as db:
+        active_paths: Set[str] = set()
+        async for _fid, path in stream_rows(db, File.id, File.path):
+            if path:
+                active_paths.add(path)
+                active_paths.add(os.path.normpath(path))
+        return active_paths
 
 
 async def count_orphaned_uploads(active_file_ids: Set[str]) -> int:
     """Count orphaned objects in the configured storage backend (local/S3/GCS/Azure)."""
     active_paths = await _get_active_file_paths(active_file_ids)
-    count = 0
-    try:
+
+    def _count() -> int:
+        n = 0
         for ref, _name, _size in iter_storage_objects():
             if ref not in active_paths:
-                count += 1
+                n += 1
+        return n
+
+    try:
+        return await asyncio.to_thread(_count)
     except Exception as e:
         log.debug(f"Error counting orphaned storage objects: {e}")
-    return count
+        return 0
 
 
 def count_audio_cache_files(max_age_days: Optional[int]) -> int:
@@ -1378,16 +1393,23 @@ async def safe_delete_file_by_id(
                 knowledges = await Knowledges.get_knowledges_by_file_id(
                     file_id, db=session
                 )
+                # Cleaners expose no .delete(); per-point deletion goes through
+                # the unified vector client (absent on NoOp deployments).
+                client = getattr(vector_cleaner, "vector_db_client", None)
                 for kb in knowledges:
+                    if client is None:
+                        break
                     try:
-                        # Delete by file_id filter
-                        vector_cleaner.delete(
-                            collection_name=kb.id, filter={"file_id": file_id}
+                        await asyncio.to_thread(
+                            client.delete,
+                            collection_name=kb.id,
+                            filter={"file_id": file_id},
                         )
-                        # Also delete by hash if available (covers hash-based lookups)
                         if file_record.hash:
-                            vector_cleaner.delete(
-                                collection_name=kb.id, filter={"hash": file_record.hash}
+                            await asyncio.to_thread(
+                                client.delete,
+                                collection_name=kb.id,
+                                filter={"hash": file_record.hash},
                             )
                     except Exception as e:
                         log.debug(f"KB embedding cleanup for {kb.id}: {e}")
@@ -1396,7 +1418,7 @@ async def safe_delete_file_by_id(
 
             # Delete standalone file vector collection
             collection_name = f"file-{file_id}"
-            vector_cleaner.delete_collection(collection_name)
+            await asyncio.to_thread(vector_cleaner.delete_collection, collection_name)
 
             # Delete from DB - CASCADE handles chat_file, channel_file, knowledge_file
             await Files.delete_file_by_id(file_id, db=session)
@@ -1404,7 +1426,7 @@ async def safe_delete_file_by_id(
             # Delete physical file from storage
             if file_record.path:
                 try:
-                    Storage.delete_file(file_record.path)
+                    await asyncio.to_thread(Storage.delete_file, file_record.path)
                 except Exception as e:
                     log.debug(f"Error deleting physical file {file_record.path}: {e}")
 
@@ -1461,10 +1483,16 @@ async def cleanup_orphaned_uploads(active_file_ids: Set[str]) -> int:
     active_paths = await _get_active_file_paths(active_file_ids)
     deleted_count = 0
 
+    def _list_orphans():
+        return [
+            (ref, name)
+            for ref, name, _size in iter_storage_objects()
+            if ref not in active_paths
+        ]
+
     try:
-        for ref, name, _size in iter_storage_objects():
-            if ref in active_paths:
-                continue
+        orphans = await asyncio.to_thread(_list_orphans)
+        for ref, name in orphans:
             try:
                 await asyncio.to_thread(Storage.delete_file, ref)
                 deleted_count += 1
