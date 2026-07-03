@@ -168,7 +168,17 @@ The prune tool reads variables from the current environment and, if present, fro
 
 ## Method 1: Docker (Recommended)
 
-Pull and run the pre-built image from GitHub Container Registry:
+Pull and run the pre-built image from GitHub Container Registry. Configure same environment variables as your running Open WebUI container:
+
+```bash
+docker run --rm \
+  -e DATABASE_URL="sqlite:////data/webui.db" \
+  -e WEBUI_SECRET_KEY="your-secret-key" \
+  -v /path/to/open-webui/data:/data \
+  ghcr.io/classic298/prune-open-webui:latest
+```
+
+By default (no arguments) the container runs a non-interactive dry-run (`--days 90 --dry-run`). Pass your own arguments to override:
 
 ```bash
 docker run --rm \
@@ -176,10 +186,10 @@ docker run --rm \
   -e WEBUI_SECRET_KEY="your-secret-key" \
   -v /path/to/open-webui/data:/data \
   ghcr.io/classic298/prune-open-webui:latest \
-  --days 90 --dry-run
+  --days 90 --execute
 ```
 
-Replace `/path/to/open-webui/data` with the path to your Open WebUI data directory and set environment variables to match your configuration. Remove `--dry-run` and add `--execute` when ready to perform deletions.
+Replace `/path/to/open-webui/data` with the path to your Open WebUI data directory. See [Environment Variables](#environment-variables) for the full list of supported variables.
 
 All dependencies (including vector database libraries) are pre-installed in the image.
 

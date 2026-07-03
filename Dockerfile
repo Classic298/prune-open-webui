@@ -11,5 +11,6 @@ COPY . /app/prune
 # Optional: install extra prune-only deps (rich, dev tools). Safe if already present.
 RUN pip install --no-cache-dir -r /app/prune/requirements.txt || true
 
-# Default entrypoint runs interactive prune. Override with args for non-interactive.
+# Default: non-interactive dry-run (safe preview). Override with your own args.
 ENTRYPOINT ["python", "/app/prune/prune.py"]
+CMD ["--days", "90", "--dry-run"]
