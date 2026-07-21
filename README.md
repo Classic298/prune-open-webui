@@ -1,3 +1,33 @@
+# LEGACY
+
+> [!IMPORTANT]
+> # This Repository is Legacy Now and will not be maintained any further
+> The approach used by the prune tool here had some downsides with Kubernetes setups and was not very handy to use in day-to-day scenarios since it always required CLI access.
+> # Successor:
+> **[The direct successor to this repository is the Prune Event Function found in my other repo here](https://github.com/Classic298/open-webui-plugins)**
+> It is easy to install, has a UI, is automated, and strictly better than the version in this repository.
+> Since maintaining both is not economical (and makes no sense when the replacement is strictly better) this repository is now LEGACY and will soon be archived in the future.
+> You should no longer use this tool. As time passes, it will stop working with newer versions of Open WebUI.
+> If you ever encounter any bugs with this tool, they will NOT be fixed. Only the [new Prune Event Function](https://github.com/Classic298/open-webui-plugins) will receive support (as much as I can).
+> Again thank you to everyone who helped test this, submitted PRs here and helped with the continuous improvement. The development is not dead, it just shifted to the other repo into a new event function.
+> Enjoy.
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
 # Open WebUI Prune Tool
 
 > [!IMPORTANT]
